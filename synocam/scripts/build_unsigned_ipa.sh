@@ -20,21 +20,21 @@ fi
 command -v flutter >/dev/null 2>&1 || { echo "::error:: 未找到 flutter"; exit 1; }
 command -v xcodebuild >/dev/null 2>&1 || { echo "::error:: 未找到 Xcode / xcodebuild"; exit 1; }
 
-echo "==> 1/5 安装依赖"
-flutter pub get
-
-echo "==> 2/5 生成本地化（app.dart 依赖 flutter_gen）"
-flutter gen-l10n
-
-echo "==> 3/5 生成 iOS 原生壳（若尚未生成）"
+echo "==> 1/5 生成 iOS 原生壳（若尚未生成，且保留自有 pubspec）"
 if [ ! -f ios/Runner.xcodeproj/project.pbxproj ]; then
+  cp pubspec.yaml /tmp/synocam_pubspec.yaml
   flutter create --platforms=ios --project-name synocam --org com.synocam .
+  cp /tmp/synocam_pubspec.yaml pubspec.yaml
 fi
 
-echo "==> 4/5 编译 iOS（不签名）"
+echo "==> 2/5 安装依赖并生成本地化"
+flutter pub get
+flutter gen-l10n
+
+echo "==> 3/5 编译 iOS（不签名）"
 flutter build ios --release --no-codesign
 
-echo "==> 5/5 打包未签名 IPA"
+echo "==> 4/5 打包未签名 IPA"
 APP=$(find build/ios -type d -name Runner.app -maxdepth 4 | head -n 1)
 if [ -z "$APP" ]; then
   echo "::error:: 未找到 Runner.app，编译产物异常"; exit 1

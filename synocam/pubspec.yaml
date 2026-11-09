@@ -3,14 +3,21 @@ description: 群晖监控客户端（对标 DS Cam），基于官方 Surveillanc
 publish_to: 'none'
 version: 0.1.0+1
 
-# 与 .github/workflows/ci.yml pin 的 Flutter 版本保持一致：
-# Flutter >= 3.22 / Dart >= 3.5（WidgetState* / CardThemeData / SegmentedButton 等 API）。
+# 与 .github/workflows/ci.yml pin 的 Flutter 3.24.5 / Dart 3.5 保持一致。
+# 注意 3.24 的 ThemeData.cardTheme 仍是 CardTheme（CardThemeData 属 3.27+）。
 environment:
   sdk: '>=3.5.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
+  # gen-l10n 生成的 AppLocalizations 依赖 global delegates(flutter_localizations) 与 intl；
+  # 二者必须显式声明，否则 flutter build 报 Couldn't resolve the package。
+  # intl 用 any：由 flutter_localizations(SDK 包) 的约束自动锁定兼容版本，
+  # 既避免手填版本号与 SDK 冲突，也避免分析器的 depend_on_referenced_packages 告警。
+  flutter_localizations:
+    sdk: flutter
+  intl: any
   cupertino_icons: ^1.0.8
   provider: ^6.1.2
   dio: ^5.7.0

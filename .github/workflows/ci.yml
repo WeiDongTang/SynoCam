@@ -62,12 +62,17 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: 安装依赖
-        run: flutter pub get
-      - name: 生成本地化（app.dart 依赖 flutter_gen）
-        run: flutter gen-l10n
-      - name: 生成 Android 原生壳（首次）
-        run: flutter create --platforms=android --project-name synocam --org com.synocam .
+      - name: 生成 Android 原生壳（保留自有 pubspec）
+        run: |
+          # flutter create 可能重写 pubspec.yaml；先备份、生成壳后恢复，
+          # 保证后续 pub get 用的是仓库里声明了 flutter_localizations/intl 的版本。
+          cp pubspec.yaml /tmp/synocam_pubspec.yaml
+          flutter create --platforms=android --project-name synocam --org com.synocam .
+          cp /tmp/synocam_pubspec.yaml pubspec.yaml
+      - name: 安装依赖并生成本地化
+        run: |
+          flutter pub get
+          flutter gen-l10n
       - name: 构建 AAB
         run: flutter build appbundle --release
       - uses: actions/upload-artifact@v4
@@ -94,12 +99,17 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
-      - name: 安装依赖
-        run: flutter pub get
-      - name: 生成本地化（app.dart 依赖 flutter_gen）
-        run: flutter gen-l10n
-      - name: 生成 iOS 原生壳（首次）
-        run: flutter create --platforms=ios --project-name synocam --org com.synocam .
+      - name: 生成 iOS 原生壳（保留自有 pubspec）
+        run: |
+          # flutter create 可能重写 pubspec.yaml；先备份、生成壳后恢复，
+          # 保证后续 pub get 用的是仓库里声明了 flutter_localizations/intl 的版本。
+          cp pubspec.yaml /tmp/synocam_pubspec.yaml
+          flutter create --platforms=ios --project-name synocam --org com.synocam .
+          cp /tmp/synocam_pubspec.yaml pubspec.yaml
+      - name: 安装依赖并生成本地化
+        run: |
+          flutter pub get
+          flutter gen-l10n
       - name: 构建 iOS（不签名）
         run: flutter build ios --release --no-codesign
       - name: 打包未签名 IPA（Payload/Runner.app → zip）
