@@ -58,6 +58,26 @@ flutter build ios --release --no-codesign  # iOS（签名另配）
 
 ---
 
+## 构建未签名 iOS IPA
+
+> iOS 编译**只能在 macOS + Xcode** 上完成。CI（`.github/workflows/ci.yml`）的 `build-ios` job 用 `macos-latest` runner 自动产出，产物为 Actions artifact `synocam-ios-unsigned-ipa`。
+
+**本地（macOS + Xcode + Flutter 3.24.x）：**
+
+```bash
+cd synocam
+bash scripts/build_unsigned_ipa.sh
+# → build/ipa/SynoCam-unsigned.ipa
+```
+
+脚本内部流程：`pub get` → `gen-l10n` → `create ios`（首次）→ `build ios --release --no-codesign` → 把 `Runner.app` 按 `Payload/` 结构 `zip` 成 `.ipa`。
+
+**关于「未签名」**：该 ipa 的 `Runner.app` 不含签名与 `embedded.mobileprovision`，**不能直接装到未越狱真机**。用途是后续用你自己的开发者/企业证书重签名（`codesign` / `fastlane sigh` + `resign`），或归档、越狱分发、二次打包。正式上架请用 `flutter build ipa` 配合签名证书与 App Store Connect（见 `.github/fastlane/Fastfile`、`docs/store/`）。
+
+> CI 里 `build-ios` **刻意不依赖** `quality` 门禁：macOS runner 排队久，让 ipa 与质量门禁并行，先把产物产出。
+
+---
+
 ## 已知边界（Phase 1 骨架）
 
 - 快照轮询用于预览；**直播**目前给 MJPEG URL 骨架，生产需接 RTSP + 原生播放器（AVPlayer/ExoPlayer/VLC）实现 H.265 硬解、双向语音、PiP。

@@ -109,9 +109,17 @@ flutter test
 flutter run                # 真机/模拟器
 ```
 
-`.github/workflows/ci.yml` 已 pin **Flutter 3.24.5**：quality(analyze+test) → build-android(AAB) → build-ios(no-codesign)。
+`.github/workflows/ci.yml` 已 pin **Flutter 3.24.5**，三个 job：
 
-> ⚠️ **诚实边界**：本沙箱仅自带 Flutter 3.0.0 / Dart 2.17 且无 Xcode/Android SDK，无法真实编译/打包/提审。协议层已在本机真实执行验证；UI 层的完整 `flutter analyze`/构建/上架需在**开发者本地或 CI**（工作流已配好）执行。原生 iOS 工程需在本地用 Xcode 补全 Signing。
+| job | runner | 产物 |
+|---|---|---|
+| `quality` | ubuntu | `flutter analyze` / `verify_core` / `flutter test` 门禁 |
+| `build-android` | ubuntu（依赖 quality） | `synocam-aab`（AAB artifact） |
+| `build-ios` | **macos-latest**（与门禁并行） | **`synocam-ios-unsigned-ipa`（未签名 .ipa artifact）** |
+
+**未签名 IPA** 由 macOS runner 执行 `flutter build ios --release --no-codesign`，再把 `Runner.app` 按 `Payload/` 结构打包成 `.ipa`（不含签名/描述文件，需后续用开发者证书重签名才能装真机）。本地 Mac 构建见 `synocam/scripts/build_unsigned_ipa.sh`。
+
+> ⚠️ **诚实边界**：本沙箱仅自带 Flutter 3.0.0 / Dart 2.17 且**无 Xcode/macOS**，无法在本机编译出 iOS `.ipa`；协议层已在本机真实执行验证，真实 iOS 打包由 **GitHub Actions 的 macOS runner** 完成，产物作为 artifact 下载。UI 层完整 `flutter analyze`/上架需在开发者本地或 CI 执行；原生 iOS 工程签名需在本地用 Xcode 补全。
 
 ---
 

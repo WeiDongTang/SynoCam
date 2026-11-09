@@ -46,13 +46,15 @@ class _CameraEditPageState extends State<CameraEditPage> {
 
   Future<void> _save() async {
     setState(() => _saving = true);
+    // 在首个 await 前缓存状态对象，避免跨异步间隙再次访问 BuildContext。
+    final state = context.read<AppState>();
     final q = _quality.split(' ').first; // 4MP / 2K / 1080P
-    await context.read<AppState>().saveCamera(
-          widget.camera,
-          name: _name.text.trim(),
-          quality: q,
-        );
-    await context.read<AppState>().toggleCamera(widget.camera, _enabled);
+    await state.saveCamera(
+      widget.camera,
+      name: _name.text.trim(),
+      quality: q,
+    );
+    await state.toggleCamera(widget.camera, _enabled);
     if (!mounted) return;
     setState(() => _saving = false);
     Navigator.of(context).pop();
@@ -62,6 +64,7 @@ class _CameraEditPageState extends State<CameraEditPage> {
   }
 
   Future<void> _delete() async {
+    final state = context.read<AppState>();
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -79,7 +82,7 @@ class _CameraEditPageState extends State<CameraEditPage> {
     );
     if (ok == true) {
       // SS 的删除属网页端高危操作；App 内以停用代替物理删除（对齐官方）。
-      await context.read<AppState>().toggleCamera(widget.camera, false);
+      await state.toggleCamera(widget.camera, false);
       if (!mounted) return;
       Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(

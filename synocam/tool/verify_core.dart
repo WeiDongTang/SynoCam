@@ -1,3 +1,7 @@
+// ignore_for_file: avoid_print, avoid_relative_lib_imports
+//
+// 说明：本脚本刻意使用相对导入以保持「零外部依赖、可直接 dart run」，
+// 并用 print 输出断言结果（CLI 工具的正常行为），故抑制这两类 lint。
 // 核心协议层自检脚本（纯 Dart，零外部依赖）：
 //   dart run tool/verify_core.dart
 // 用于在无法运行 flutter build 的环境（如无 Xcode/SDK 的 CI 前置阶段）里，

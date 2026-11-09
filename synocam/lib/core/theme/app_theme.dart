@@ -1,8 +1,9 @@
 // Aurora 浅色主题（对齐定稿 A）：iOS 系统蓝 + 大留白 + 分组卡片。
 // 同时提供深色变体，供「首页模式 / 夜间」等场景使用。
 //
-// 目标 SDK：Flutter >= 3.22 / Dart >= 3.5（WidgetState* / CardThemeData 等 API）。
-// pubspec.yaml 与 .github/workflows/ci.yml 均 pin 到该基线，避免跨版本编译失败。
+// 目标 SDK：Flutter 3.24.x / Dart 3.5（CI 与 pubspec 均 pin 3.24.5）。
+// 注意 3.24 的 ThemeData.cardTheme 仍是 CardTheme 类型；CardThemeData 自 3.27 才引入，
+// 若将来升级 SDK 到 3.27+ 需同步改为 CardThemeData。
 import 'package:flutter/material.dart';
 import 'app_colors.dart';
 
@@ -63,7 +64,7 @@ class AppTheme {
           );
         }),
       ),
-      cardTheme: CardThemeData(
+      cardTheme: CardTheme(
         elevation: 0,
         color: dark ? const Color(0xFF1A1D24) : AppColors.card,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),

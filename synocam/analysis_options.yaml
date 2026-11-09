@@ -7,3 +7,6 @@ analyzer:
     - "**/*.g.dart"
     - "**/*.freezed.dart"
     - build/**
+    # tool/ 是纯 Dart CLI 自检脚本，刻意用相对导入 + print，
+    # 不纳入 App 的 lint 门禁（脚本自身另有 // ignore_for_file 兜底）。
+    - tool/**

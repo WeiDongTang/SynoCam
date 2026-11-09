@@ -361,7 +361,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
             borderRadius: BorderRadius.circular(9),
             border: Border.all(color: AppColors.blue),
           ),
-          child: Text('${_speed}×',
+          child: Text('$_speed×',
               style: const TextStyle(
                   fontSize: 11,
                   color: AppColors.blue,

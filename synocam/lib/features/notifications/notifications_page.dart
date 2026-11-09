@@ -1,11 +1,9 @@
 // 通知：事件列表（按类型着色图标）、未读标记、免打扰、推送设置。
 // 对齐定稿 A 原型 v-alert。
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
-import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
 
 class NotificationsPage extends StatefulWidget {

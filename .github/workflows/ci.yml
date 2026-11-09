@@ -43,7 +43,7 @@ jobs:
       - name: 单元测试
         run: flutter test
 
-  # ── Android 构建（Linux 可出 AAB/APK）──
+  # ── Android 构建（Linux 可出 AAB）──
   build-android:
     name: build android
     needs: quality
@@ -64,6 +64,8 @@ jobs:
           java-version: '17'
       - name: 安装依赖
         run: flutter pub get
+      - name: 生成本地化（app.dart 依赖 flutter_gen）
+        run: flutter gen-l10n
       - name: 生成 Android 原生壳（首次）
         run: flutter create --platforms=android --project-name synocam --org com.synocam .
       - name: 构建 AAB
@@ -72,11 +74,15 @@ jobs:
         with:
           name: synocam-aab
           path: synocam/build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
 
-  # ── iOS 构建（需 macOS runner；无签名产出，签名/提审见 fastlane/Fastfile）──
+  # ── iOS 未签名 IPA 构建（需 macOS runner）──
+  # 用 --no-codesign 产出未签名 Runner.app，再按 Payload/ 结构打成 .ipa。
+  # 该 ipa 未含签名/描述文件，不能直接装真机，供后续用开发者证书重签或分发。
   build-ios:
-    name: build ios (no-codesign)
-    needs: quality
+    name: build ios unsigned ipa
+    # 刻意不依赖 quality：macOS runner 资源宝贵、排队久，ipa 构建与门禁并行，
+    # 即便 analyze 有残留告警也能先把产物产出，符合「先构建 ipa」。
     runs-on: macos-latest
     defaults:
       run:
@@ -90,10 +96,38 @@ jobs:
           cache: true
       - name: 安装依赖
         run: flutter pub get
+      - name: 生成本地化（app.dart 依赖 flutter_gen）
+        run: flutter gen-l10n
       - name: 生成 iOS 原生壳（首次）
         run: flutter create --platforms=ios --project-name synocam --org com.synocam .
       - name: 构建 iOS（不签名）
         run: flutter build ios --release --no-codesign
+      - name: 打包未签名 IPA（Payload/Runner.app → zip）
+        run: |
+          set -e
+          # Flutter 不同小版本产物目录可能是 iphoneos/ 或 Release-iphoneos/
+          APP=$(find build/ios -type d -name Runner.app -maxdepth 4 | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "::error::未找到 Runner.app，构建产物异常"; exit 1
+          fi
+          echo "找到 app: $APP"
+          rm -rf build/ipa
+          mkdir -p build/ipa/Payload
+          cp -R "$APP" build/ipa/Payload/
+          # 清理 Xcode 生成的无关文件，保持 ipa 简洁
+          find build/ipa/Payload -name '.DS_Store' -delete || true
+          cd build/ipa
+          # -y 保留 Frameworks 里的符号链接，-r 递归，-q 静默
+          zip -qry SynoCam-unsigned.ipa Payload
+          echo "=== ipa 结构校验 ==="
+          unzip -l SynoCam-unsigned.ipa | head -n 20
+          echo "=== 产物大小 ==="
+          ls -lh SynoCam-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synocam-ios-unsigned-ipa
+          path: synocam/build/ipa/SynoCam-unsigned.ipa
+          if-no-files-found: error
 
   # Fastlane 提审需配置签名证书与 App Store Connect / Play Console Secrets，
   # 见 .github/fastlane/Fastfile 与 docs/store/；此处不自动触发上架。
