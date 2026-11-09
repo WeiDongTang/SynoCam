@@ -1,0 +1,26 @@
+name: synocam
+description: 群晖监控客户端（对标 DS Cam），基于官方 Surveillance Station Web API。
+publish_to: 'none'
+version: 0.1.0+1
+
+# 与 .github/workflows/ci.yml pin 的 Flutter 版本保持一致：
+# Flutter >= 3.22 / Dart >= 3.5（WidgetState* / CardThemeData / SegmentedButton 等 API）。
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  provider: ^6.1.2
+  dio: ^5.7.0
+  shared_preferences: ^2.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  generate: true   # 配合 l10n.yaml 生成 AppLocalizations

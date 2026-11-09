@@ -1,0 +1,9 @@
+include: package:flutter_lints/flutter.yaml
+
+# 只做保守配置：不额外开启会产生大量 info 的自定义规则，
+# 避免 `flutter analyze`（默认对任何 issue 返回非零）在 CI 里被无关告警拖挂。
+analyzer:
+  exclude:
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+    - build/**

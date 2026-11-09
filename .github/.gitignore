@@ -1,0 +1,5 @@
+# CI
+*.jks
+fastlane/report.xml
+build/
+DerivedData/

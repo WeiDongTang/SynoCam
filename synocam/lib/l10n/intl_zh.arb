@@ -1,0 +1,20 @@
+{
+  "@@locale": "zh",
+
+  "appName": "群晖监控",
+  "@appName": { "description": "应用名称" },
+  "login": "登录",
+  "live": "实时画面",
+  "cameras": "摄像机",
+  "recordings": "录像与快照",
+  "notifications": "通知",
+  "settings": "设置",
+  "quickconnect": "QuickConnect ID",
+  "addCamera": "添加摄像头",
+  "editCamera": "编辑摄像机",
+  "homeMode": "首页模式",
+  "signOut": "退出登录",
+  "passwordLock": "密码锁",
+  "hardwareDecode": "硬件解码",
+  "license": "许可证"
+}

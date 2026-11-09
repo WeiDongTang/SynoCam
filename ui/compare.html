@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>SynoCam · UI 方案对比</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+:root{--mono:'JetBrains Mono',monospace;--f:'Inter',sans-serif;--d:'Space Grotesk',sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--f);background:#0B0D11;color:#E8ECF1;min-height:100vh;padding:38px 30px 60px;
+  background-image:radial-gradient(800px 460px at 15% -8%,rgba(90,120,180,.14),transparent 60%),radial-gradient(700px 420px at 88% 4%,rgba(180,90,60,.10),transparent 60%)}
+.wrap{max-width:1400px;margin:0 auto}
+header{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px;border-bottom:1px solid rgba(255,255,255,.12);padding-bottom:20px;margin-bottom:8px}
+header .l .kick{font-family:var(--mono);font-size:10px;letter-spacing:2px;color:#7FA6D8}
+header h1{font-family:var(--d);font-size:31px;font-weight:600;letter-spacing:-.5px;margin-top:8px}
+header h1 span{color:#7FA6D8}
+header p{font-size:13px;color:#8A94A3;margin-top:8px;line-height:1.6;max-width:640px}
+header .r{font-family:var(--mono);font-size:10px;color:#6C7787;text-align:right;line-height:1.8}
+.note{background:rgba(127,166,216,.07);border:1px solid rgba(127,166,216,.22);border-left:3px solid #7FA6D8;border-radius:8px;padding:14px 18px;margin:22px 0 28px;font-size:12.5px;color:#AEB8C6;line-height:1.7}
+.note b{color:#E8ECF1}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+@media(max-width:1100px){.grid{grid-template-columns:1fr;max-width:520px;margin:0 auto}}
+.card{background:#12161D;border:1px solid rgba(255,255,255,.09);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;transition:.3s cubic-bezier(.16,1,.3,1)}
+.card:hover{transform:translateY(-4px);border-color:rgba(127,166,216,.4);box-shadow:0 24px 60px -28px rgba(0,0,0,.9)}
+.card .top{padding:16px 18px 14px;border-bottom:1px solid rgba(255,255,255,.07)}
+.card .top .id{font-family:var(--mono);font-size:10px;letter-spacing:1.5px;color:#6C7787}
+.card .top h2{font-family:var(--d);font-size:19px;font-weight:600;margin-top:7px}
+.card .top .tagline{font-size:12px;color:#8A94A3;margin-top:6px;line-height:1.5}
+.card .top .badge{display:inline-block;font-family:var(--mono);font-size:9px;padding:3px 8px;border-radius:20px;margin-top:11px;border:1px solid}
+.b-a{color:#8FB4FF;border-color:rgba(143,180,255,.35);background:rgba(143,180,255,.08)}
+.b-b{color:#7FD4EC;border-color:rgba(127,212,236,.35);background:rgba(127,212,236,.08)}
+.b-c{color:#E0A98E;border-color:rgba(224,169,142,.35);background:rgba(224,169,142,.08)}
+.screen-wrap{background:#0C1016;padding:18px;display:grid;place-items:center}
+.framebox{width:100%;height:470px;overflow:hidden;border-radius:10px;position:relative;background:#0C1016}
+.framebox iframe{position:absolute;top:0;left:50%;margin-left:-226px;width:452px;height:906px;transform:scale(.518);transform-origin:top center;border:0;pointer-events:none}
+.card ul{list-style:none;padding:16px 18px 6px;display:flex;flex-direction:column;gap:9px;flex:1}
+.card li{font-size:11.5px;color:#AEB8C6;line-height:1.5;padding-left:15px;position:relative}
+.card li::before{content:"";position:absolute;left:0;top:6px;width:5px;height:5px;border-radius:50%;background:#4C5A6B}
+.card li b{color:#E8ECF1;font-weight:600}
+.card .trade{padding:12px 18px 14px;margin:8px 14px 14px;background:rgba(255,255,255,.03);border-radius:9px;font-size:11px;color:#7E8898;line-height:1.6}
+.card .trade b{color:#B9A07A}
+.card .open{margin:0 18px 18px;display:block;text-align:center;background:rgba(127,166,216,.12);border:1px solid rgba(127,166,216,.3);color:#BBD3F5;padding:11px;border-radius:9px;font-family:var(--mono);font-size:11px;text-decoration:none;transition:.2s}
+.card .open:hover{background:rgba(127,166,216,.22);color:#fff}
+footer{margin-top:34px;border-top:1px solid rgba(255,255,255,.1);padding-top:20px;font-size:12px;color:#7E8898;line-height:1.8}
+footer b{color:#C9D2DE}
+footer code{font-family:var(--mono);color:#8FB4FF;font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="l">
+    <div class="kick">SYNOCAM / UI EXPLORATION · ROUND 3</div>
+    <h1>三套<span>风格完全不同</span>的界面方案</h1>
+    <p>前两版都是深色中性调，这次把三个美学象限彻底拉开：浅色原生、专业仪表盘、暖白编辑风。三稿均使用<strong style="color:#D8DEE8">真实监控画面素材</strong>，功能页面一致（实时 / 单画面 / 事件 / 设置），可直接交互。</p>
+  </div>
+  <div class="r">3 OPTIONS<br/>真实画面素材<br/>2026-11-09</div>
+</header>
+
+<div class="note">
+  <b>归档说明：</b>本页为第 3 轮三方案对比存档。<b>方案 A 已选定为定稿</b>并在 [`index.html`](index.html) 中完成整改（统一 SVG 图标系统、补齐摄像机管理 / 添加 / 编辑功能、信息架构对齐官方 5 主 tab）。B / C 保留供回顾，不再迭代。
+</div>
+
+<div class="grid">
+  <!-- A -->
+  <div class="card">
+    <div class="top">
+      <div class="id">OPTION A · ✅ 已定稿</div>
+      <h2>Aurora · 浅色原生</h2>
+      <div class="tagline">iOS 系统蓝 + 大留白 + 分组白卡片，最贴近 Apple 原生 App 的干净高端。</div>
+      <span class="badge b-a">浅色 / 克制 / 消费者友好</span>
+    </div>
+    <div class="screen-wrap"><div class="framebox"><iframe src="index.html" scrolling="no"></iframe></div></div>
+    <ul>
+      <li><b>浅灰底 + 纯白卡片</b>，柔和阴影，圆角 14–16px</li>
+      <li>大标题导航（Large Title）+ 分段控制器</li>
+      <li>主色 iOS 蓝，状态色绿 / 红 / 琥珀</li>
+      <li>信息密度低、留白充足，观感最轻松</li>
+    </ul>
+    <div class="trade"><b>取舍：</b>最容易被接受、最"高端消费品"，但专业监控感和信息密度最弱。</div>
+    <a class="open" href="index.html" target="_blank">打开定稿原型 ↗</a>
+  </div>
+
+  <!-- B -->
+  <div class="card">
+    <div class="top">
+      <div class="id">OPTION B</div>
+      <h2>Slate Command · 专业仪表盘</h2>
+      <div class="tagline">冷蓝灰 + 直角几何 + 系统遥测条，专业 NVR / 安防工作台的精密感。</div>
+      <span class="badge b-b">深色 / 精密 / 信息密集</span>
+    </div>
+    <div class="screen-wrap"><div class="framebox"><iframe src="option-b.html" scrolling="no"></iframe></div></div>
+    <ul>
+      <li><b>顶部遥测条</b>：在线路数 / 码率 / CPU / 运行时长</li>
+      <li>CH 通道号 + OSD 时间戳叠在画面上</li>
+      <li>等宽字体、细边框、表格化事件日志</li>
+      <li>信息密度最高，运维视角最专业</li>
+    </ul>
+    <div class="trade"><b>取舍：</b>专业感与真实感最强，但偏"工具"，普通家庭用户可能觉得冷硬。</div>
+    <a class="open" href="option-b.html" target="_blank">打开完整交互原型 ↗</a>
+  </div>
+
+  <!-- C -->
+  <div class="card">
+    <div class="top">
+      <div class="id">OPTION C</div>
+      <h2>Editorial · 暖白编辑风</h2>
+      <div class="tagline">象牙纸 + 衬线大标题 + 细线分区 + 一点朱红，杂志式的设计驱动美学。</div>
+      <span class="badge b-c">暖白 / 排版 / 有格调</span>
+    </div>
+    <div class="screen-wrap"><div class="framebox"><iframe src="option-c.html" scrolling="no"></iframe></div></div>
+    <ul>
+      <li><b>衬线字体大标题</b> + 编号 + 细线分区，无卡片阴影</li>
+      <li>画面像摄影作品，带图注与通道编号</li>
+      <li>朱红仅用于录制标记 / 当前项，极克制</li>
+      <li>完全不像传统监控软件，辨识度最高</li>
+    </ul>
+    <div class="trade"><b>取舍：</b>最有设计格调、最不像"AI 做的"，但偏离安防工具惯性，需确认能接受。</div>
+    <a class="open" href="option-c.html" target="_blank">打开完整交互原型 ↗</a>
+  </div>
+</div>
+
+<footer>
+  <b>共同点（三稿一致）：</b>均覆盖 实时多画面（1/1×2/2×2/3×3）、单画面 PTZ + 时间轴回放 + 快捷操作、事件与录像、设置（密码锁 / Face ID / AirPlay / 硬件解码 / 悬浮播放 / Smart Timeline / 许可证 / 首页模式地图）。<br/>
+  <b>素材：</b><code>ui/assets/cam1.jpg · cam2.jpg · cam3.jpg</code> 为生成的住宅监控视角画面（已去水印、统一冷调）。<br/>
+  定稿后我会把选中的方案同步到 <code>docs/UI_DESIGN.md</code> 与 <code>.impeccable.md</code>，并提交到 GitHub 仓库。
+</footer>
+</div>
+</body>
+</html>

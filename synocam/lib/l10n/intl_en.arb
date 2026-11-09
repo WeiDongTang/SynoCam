@@ -1,0 +1,20 @@
+{
+  "@@locale": "en",
+
+  "appName": "SynoCam",
+  "@appName": { "description": "应用名称" },
+  "login": "Sign In",
+  "live": "Live View",
+  "cameras": "Cameras",
+  "recordings": "Recordings",
+  "notifications": "Notifications",
+  "settings": "Settings",
+  "quickconnect": "QuickConnect ID",
+  "addCamera": "Add Camera",
+  "editCamera": "Edit Camera",
+  "homeMode": "Home Mode",
+  "signOut": "Sign Out",
+  "passwordLock": "Passcode Lock",
+  "hardwareDecode": "Hardware Decoding",
+  "license": "License"
+}

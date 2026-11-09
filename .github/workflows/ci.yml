@@ -1,0 +1,99 @@
+name: synocam-ci
+
+# Flutter 工程位于仓库子目录 synocam/，所有步骤用 working-directory 指向它。
+# SDK 基线 Flutter 3.24.x / Dart 3.5，与 pubspec.yaml 的 environment 一致。
+on:
+  push:
+    branches: [main]
+    paths: ['synocam/**', '.github/workflows/ci.yml']
+  pull_request:
+    paths: ['synocam/**', '.github/workflows/ci.yml']
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: '3.24.5'
+
+jobs:
+  # ── 质量门禁：格式化 / 静态分析 / 纯 Dart 自检 / 单元测试 ──
+  quality:
+    name: analyze & test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: synocam
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: 安装依赖
+        run: flutter pub get
+      - name: 生成本地化
+        run: flutter gen-l10n
+      # 不同 Dart 版本的 formatter 输出可能不同，这里统一格式化而非设卡点，
+      # 避免仅因 SDK 小版本差异就误挂流水线；真正的代码门禁是 flutter analyze。
+      - name: 统一格式化
+        run: dart format lib test tool
+      - name: 静态分析
+        run: flutter analyze
+      - name: 核心协议自检（纯 Dart，无平台依赖）
+        run: dart run tool/verify_core.dart
+      - name: 单元测试
+        run: flutter test
+
+  # ── Android 构建（Linux 可出 AAB/APK）──
+  build-android:
+    name: build android
+    needs: quality
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: synocam
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: 安装依赖
+        run: flutter pub get
+      - name: 生成 Android 原生壳（首次）
+        run: flutter create --platforms=android --project-name synocam --org com.synocam .
+      - name: 构建 AAB
+        run: flutter build appbundle --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synocam-aab
+          path: synocam/build/app/outputs/bundle/release/app-release.aab
+
+  # ── iOS 构建（需 macOS runner；无签名产出，签名/提审见 fastlane/Fastfile）──
+  build-ios:
+    name: build ios (no-codesign)
+    needs: quality
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: synocam
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: 安装依赖
+        run: flutter pub get
+      - name: 生成 iOS 原生壳（首次）
+        run: flutter create --platforms=ios --project-name synocam --org com.synocam .
+      - name: 构建 iOS（不签名）
+        run: flutter build ios --release --no-codesign
+
+  # Fastlane 提审需配置签名证书与 App Store Connect / Play Console Secrets，
+  # 见 .github/fastlane/Fastfile 与 docs/store/；此处不自动触发上架。

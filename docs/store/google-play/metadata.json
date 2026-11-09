@@ -1,0 +1,18 @@
+{
+  "title": "群晖监控 – 专业群晖 surveillance 监控客户端",
+  "short_description": "专业群晖 surveillance 监控客户端",
+  "full_description": "群晖监控（SynoCam）专业群晖 surveillance 监控客户端，面向工具场景，帮助你更高效地完成日常任务。\n\n【核心功能】\n· 围绕「监控」打造，操作直观\n· 支持离线使用，数据本地优先，隐私可控\n· 清爽界面与稳定性能，适配主流机型\n\n【关键词】监控, 群晖, Synology, DS Cam, Surveillance Station, 摄像头, NAS, 安防\n\n欢迎使用 群晖监控，如有建议可通过应用内反馈告诉我们。",
+  "category": "工具",
+  "tags": [
+    "监控",
+    "群晖",
+    "Synology",
+    "DS Cam",
+    "Surveillance Station",
+    "摄像头",
+    "NAS",
+    "安防"
+  ],
+  "contact_email": "{{support_email}}",
+  "privacy_policy": "{{privacy_policy_url}}"
+}

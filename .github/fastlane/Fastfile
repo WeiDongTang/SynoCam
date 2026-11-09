@@ -1,0 +1,43 @@
+fastlane_version "2.219.0"
+
+default_platform(:android) if File.exist?("android")
+default_platform(:ios) if File.exist?("ios")
+
+platform :android do
+  lane :android_test do
+    gradle(task: "test")
+  end
+
+  lane :android_beta do
+    gradle(task: "clean assembleRelease",
+      properties: { "android.injected.signing.store.file" => ENV["ANDROID_KEYSTORE"],
+                     "android.injected.signing.store.password" => ENV["ANDROID_KEYSTORE_PASS"],
+                     "android.injected.signing.key.alias" => ENV["ANDROID_KEY_ALIAS"],
+                     "android.injected.signing.key.password" => ENV["ANDROID_KEY_PASS"] })
+    upload_to_play_store(track: 'internal', aab: '../app/build/outputs/bundle/release/app-release.aab')
+  end
+
+  lane :android_release do
+    gradle(task: "clean assembleRelease", # 同上签名属性
+      properties: { "android.injected.signing.store.file" => ENV["ANDROID_KEYSTORE"] })
+    upload_to_play_store(track: 'production', aab: '../app/build/outputs/bundle/release/app-release.aab')
+  end
+end
+
+platform :ios do
+  lane :ios_test do
+    scan(scheme: ENV["IOS_SCHEME"])
+  end
+
+  lane :ios_beta do
+    match(type: "appstore", readonly: true)
+    gym(scheme: ENV["IOS_SCHEME"], export_method: "app-store")
+    upload_to_testflight(skip_waiting_for_build_processing: true)
+  end
+
+  lane :ios_release do
+    match(type: "appstore", readonly: true)
+    gym(scheme: ENV["IOS_SCHEME"], export_method: "app-store")
+    deliver(submit_for_review: true, force: true)
+  end
+end
