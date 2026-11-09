@@ -27,7 +27,18 @@
 
 **工程层预防**（Flutter 工程）：`core/theme/app_icons.dart` 建立唯一 `IconData` 映射表、`widgets/app_icon.dart` 用 `AppIcon`/`BadgeIcon` 统一尺寸与色调，禁止页面散写 `Icons.xxx`/emoji，从架构上杜绝同类问题。详见 [`ARCHITECTURE.md`](ARCHITECTURE.md) 第 3 节。
 
-**深链预览**：`index.html#v-live` / `#v-cam` / `#v-rec` / `#v-alert` / `#v-set` / `#p-single` / `#p-edit` / `#p-add`。
+### 0.2 追加：2FA 两步验证登录页（用户「开启二次验证后登录报错」）
+
+原型原本是「已登录态」的 5 tab，缺少登录视图。本轮补 `p-login` 二级页（复用 `.page/.field/.group/.btn-primary` 与既有 symbol 图标），完整演示群晖 2FA 登录闭环：
+
+- **初始态**：服务器（地址/端口/HTTPS）、账户（账号/密码）、「账号已开启两步验证」开关；
+- **403 态**：只输密码点登录 → 蓝色引导横幅「该账号已开启两步验证（DSM 返回 403）…」+ 自动展开 6 位 OTP 框并聚焦；
+- **404 态**：验证码错误 → 红色横幅「验证码错误或已过期（DSM 返回 404）…」，保持 OTP 框；
+- **成功态**：绿色横幅 + 信任此设备说明；「信任此设备（下次免验证码）」开关对齐官方「受信连接」。
+
+交互函数 `toggle2fa()/tryLogin()/resetLogin()`，演示验证码 `123456`。已用无头 Chromium 渲染 3 态核验：图标完整、无重叠、横幅在 OTP 框上方、登录按钮与底部说明滚动可见。全部 `<use>` 引用均有对应 `<symbol>` 且 viewBox 齐全。
+
+**深链预览**：`index.html#v-live` / `#v-cam` / `#v-rec` / `#v-alert` / `#v-set` / `#p-single` / `#p-edit` / `#p-add` / **`#p-login`**（直达 2FA 登录演示，默认展开 403 态）；设置页「账户与服务器」也可点开。
 
 ---
 

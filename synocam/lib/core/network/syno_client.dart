@@ -41,6 +41,14 @@ class SynoClient {
   }
 
   /// 登录。成功返回 SynoSession（含 SID）；失败抛 SynoException。
+  ///
+  /// 两步验证（2FA）说明（依据 Synology《DSM Login Web API Guide》）：
+  /// - 账号开启 2FA 且未带 [otpCode] 时，DSM 返回 403，需要用户输入 6 位
+  ///   验证码后再带 otp_code 重试；验证码错误返回 404。
+  /// - 首次带 [otpCode] 且 [enableDeviceToken] = true 时附加
+  ///   `enable_device_token=yes&device_name=...`，DSM 会在响应里返回 `did`。
+  /// - 之后把该 did 作为 [deviceId] 传入即可免验证码登录（官方 Example 4：
+  ///   仅带 device_name + device_id，不带 otp_code）。
   Future<SynoSession> login({
     required String host,
     required String account,
@@ -48,6 +56,9 @@ class SynoClient {
     bool https = false,
     int? port,
     String? otpCode,
+    bool enableDeviceToken = false,
+    String? deviceId,
+    String? deviceName,
   }) async {
     final p =
         port ?? (https ? SynoEndpoints.httpsPort : SynoEndpoints.httpPort);
@@ -64,7 +75,10 @@ class SynoClient {
         'passwd': password,
         'session': AppConfig.sessionName,
         'format': AppConfig.sidFormat,
-        'otp_code': otpCode,
+        'otp_code': (otpCode == null || otpCode.isEmpty) ? null : otpCode,
+        'enable_device_token': enableDeviceToken ? 'yes' : null,
+        'device_id': deviceId,
+        'device_name': deviceName,
       },
     );
 

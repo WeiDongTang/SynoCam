@@ -1,4 +1,4 @@
-// 认证仓储：登录/登出 + 会话持久化（凭据走安全存储，不落明文）。
+// 认证仓储：登录/登出 + 会话与「信任此设备」令牌持久化（凭据走安全存储）。
 import '../../core/network/syno_client.dart';
 import '../../core/storage/secure_store.dart';
 import '../models/syno_session.dart';
@@ -9,6 +9,10 @@ class AuthRepository {
   final SynoClient _client;
   final SecureStore _store;
 
+  /// 读取该 NAS+账号已保存的设备令牌（用于免二次验证登录）。
+  Future<String?> deviceId(String host, String account) =>
+      _store.readDeviceId(host, account);
+
   Future<SynoSession> login({
     required String host,
     required String account,
@@ -16,8 +20,12 @@ class AuthRepository {
     bool https = false,
     int? port,
     String? otpCode,
+    bool enableDeviceToken = false,
+    String? deviceName,
     bool remember = true,
   }) async {
+    // 已信任此设备时，带 device_id 即可免验证码；否则用用户输入的 otp_code。
+    final savedDid = await _store.readDeviceId(host, account);
     final session = await _client.login(
       host: host,
       account: account,
@@ -25,7 +33,14 @@ class AuthRepository {
       https: https,
       port: port,
       otpCode: otpCode,
+      enableDeviceToken: enableDeviceToken,
+      deviceId: savedDid,
+      deviceName: deviceName,
     );
+    // DSM 在 enable_device_token=yes 时返回 did；保存供后续免验证登录。
+    if (session.did != null && session.did!.isNotEmpty) {
+      await _store.saveDeviceId(host, account, session.did!);
+    }
     if (remember) {
       await _store.saveSession(session);
       await _store.saveCredentials(account, password);

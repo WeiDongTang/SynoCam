@@ -53,8 +53,12 @@ flutter build ios --release --no-codesign  # iOS（签名另配）
 1. **图标唯一入口**：所有图标只能来自 `AppIcons.*`，且经 `AppIcon`/`BadgeIcon` 渲染（固定尺寸/线宽）。禁止页面里散写 `Icons.xxx` 或 emoji —— 这是修复原型「图标不统一/裁切/错位」的架构级措施。
 2. **凭据零落地**：账号/密码/SID 只经 `SecureStore`，绝不写 SharedPreferences 明文或硬编码。见 `docs/checklists/checklist-security.md`。
 3. **协议与业务分离**：`syno_api.dart` 不依赖 Flutter/dio，可在任意 Dart 环境单测；`SynoClient` 只做协议胶水；语义由 Repository 组装。
-4. **会话失效统一处理**：错误码 106/107/402 → `SynoException.needsReLogin`，UI 触发重新登录。
-5. **敏感资产**：证书/签名/keystore/API 密钥一律走环境变量与 CI Secrets，仓库不含明文。
+4. **会话失效统一处理**：错误码 106/107/402/119 → `SynoException.needsReLogin`，UI 触发重新登录。
+5. **两步验证（2FA）**：错误码按 Synology《DSM Login Web API Guide》—— **403 需要验证码**、
+   **404 验证码失败**、406 强制 2FA → `SynoException.needsOtp`，登录页自动展开 OTP 框；
+   勾「信任此设备」后保存 DSM 返回的 `did`，后续带 `device_id` 免验证码登录。
+   ⚠️ 勿再把 403 当「密码错误」、勿用 404/405 判定需要 2FA（历史缺陷，见 ARCHITECTURE §2）。
+6. **敏感资产**：证书/签名/keystore/API 密钥一律走环境变量与 CI Secrets，仓库不含明文。
 
 ---
 

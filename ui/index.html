@@ -209,6 +209,23 @@ body{font-family:var(--f);background:#D9DCE2;color:var(--ink);min-height:100vh;d
 .tabbar button svg{width:22px;height:22px}
 .tabbar button.on{color:var(--blue)}
 .tabbar .bdg{position:absolute;top:-3px;right:calc(50% - 17px);background:var(--red);color:#fff;font-size:8px;min-width:15px;height:15px;border-radius:8px;display:grid;place-items:center;font-family:var(--mono);padding:0 3px}
+/* 2FA 登录演示 */
+.lg-brand{display:flex;flex-direction:column;align-items:center;gap:10px;padding:22px 0 20px}
+.lg-logo{width:58px;height:58px;border-radius:17px;background:var(--blue);display:grid;place-items:center;color:#fff;box-shadow:0 10px 24px -10px var(--blue)}
+.lg-logo svg{width:30px;height:30px}
+.lg-brand h2{font-size:22px;font-weight:700;color:var(--ink)}
+.lg-brand p{font-size:11px;color:var(--sub)}
+.lg-switch{display:flex;align-items:center;gap:8px;padding:11px 14px;font-size:13px;color:var(--ink)}
+.lg-switch .lbl{flex:1}
+.lg-banner{display:flex;gap:8px;align-items:flex-start;padding:11px 13px;border-radius:11px;font-size:11.5px;line-height:1.5;margin:4px 0 12px}
+.lg-banner svg{flex:none;width:16px;height:16px}
+.lg-banner.hint{background:rgba(28,107,242,.09);color:var(--blue)}
+.lg-banner.err{background:rgba(225,75,63,.1);color:var(--red)}
+.lg-otp{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--card);border:1.5px solid var(--blue);border-radius:12px;margin-bottom:12px}
+.lg-otp svg{width:19px;height:19px;color:var(--blue);flex:none}
+.lg-otp input{flex:1;border:none;outline:none;background:none;font-family:var(--mono);font-size:19px;letter-spacing:8px;color:var(--ink);text-align:center}
+.lg-otp input::placeholder{color:var(--faint);letter-spacing:6px}
+.lg-foot{text-align:center;font-size:10.5px;color:var(--faint);line-height:1.6;margin-top:16px}
 </style>
 </head>
 <body>
@@ -349,7 +366,7 @@ body{font-family:var(--f);background:#D9DCE2;color:var(--ink);min-height:100vh;d
     <div class="grow click" onclick="toast('许可证：8 / 10 路已用')"><div class="gi"><svg class="ic sm"><use href="#i-license"/></svg></div><div class="txt"><b>许可证</b><span>8 / 10 路已用 · 离线管理</span></div><span class="end"><svg class="ic sm"><use href="#i-chev"/></svg></span></div>
     <div class="grow click" onclick="toast('推送与免打扰设置')"><div class="gi"><svg class="ic sm"><use href="#i-moon"/></svg></div><div class="txt"><b>推送与免打扰</b><span>Do Not Disturb</span></div><span class="end"><svg class="ic sm"><use href="#i-chev"/></svg></span></div>
     <div class="grow click" onclick="toast('受信连接：3 个')"><div class="gi"><svg class="ic sm"><use href="#i-shield"/></svg></div><div class="txt"><b>受信连接</b><span>3 个已信任</span></div><span class="end"><svg class="ic sm"><use href="#i-chev"/></svg></span></div>
-    <div class="grow click" onclick="toast('账户：admin · NAS-01')"><div class="gi"><svg class="ic sm"><use href="#i-server"/></svg></div><div class="txt"><b>账户与服务器</b><span>admin · NAS-01 · SS 9.2</span></div><span class="end"><svg class="ic sm"><use href="#i-chev"/></svg></span></div>
+    <div class="grow click" onclick="openPage('p-login')"><div class="gi"><svg class="ic sm"><use href="#i-server"/></svg></div><div class="txt"><b>账户与服务器</b><span>admin · NAS-01 · 两步验证登录演示</span></div><span class="end"><svg class="ic sm"><use href="#i-chev"/></svg></span></div>
   </div>
 </div>
 
@@ -419,6 +436,36 @@ body{font-family:var(--f);background:#D9DCE2;color:var(--ink);min-height:100vh;d
   <div class="pagebody">
     <div class="seg" id="addSeg"><button class="on" onclick="setAdd('discover')">自动发现</button><button onclick="setAdd('qr')">二维码配网</button><button onclick="setAdd('manual')">手动添加</button></div>
     <div id="addBody"></div>
+  </div>
+</div>
+
+<!-- ═══ 二级页 4 · 登录 / 两步验证 (2FA) ═══ -->
+<div class="page" id="p-login">
+  <div class="navbar"><button class="nb" onclick="closePage('p-login')"><svg class="ic sm"><use href="#i-back"/></svg> 返回</button><span class="title">登录</span><span class="nb right" style="color:var(--faint)">DSM 7.x</span></div>
+  <div class="pagebody" style="padding:16px 16px 30px">
+    <div class="lg-brand">
+      <div class="lg-logo"><svg class="ic"><use href="#i-camera"/></svg></div>
+      <h2>群晖监控</h2>
+      <p>SynoCam · 连接 Surveillance Station</p>
+    </div>
+    <div class="sect">服务器</div>
+    <div class="group">
+      <div class="field"><label>地址</label><input value="nas.example.com" style="text-align:right"/></div>
+      <div class="field"><label>端口</label><input value="5001" style="text-align:right"/></div>
+      <div class="field"><label>HTTPS</label><div style="flex:1;display:flex;justify-content:flex-end"><div class="tg on"></div></div></div>
+    </div>
+    <div class="sect">账户</div>
+    <div class="group">
+      <div class="field"><label>账号</label><input value="admin" style="text-align:right"/></div>
+      <div class="field"><label>密码</label><input type="password" value="mypassword" style="text-align:right"/></div>
+    </div>
+    <div class="group" style="margin-top:14px">
+      <div class="lg-switch"><svg class="ic sm" style="color:var(--sub)"><use href="#i-shield"/></svg><span class="lbl">账号已开启两步验证（2FA）</span><div class="tg" id="lg2fa" onclick="toggle2fa()"></div></div>
+    </div>
+    <div id="lgBannerWrap"></div>
+    <div id="lgOtpWrap"></div>
+    <button class="btn-primary" onclick="tryLogin()"><svg class="ic sm"><use href="#i-check"/></svg> 登录</button>
+    <div class="lg-foot">需要 DSM 7.x / Surveillance Station 9.x<br/>账号需具备 Surveillance Station 访问权限<br/><a href="javascript:resetLogin()" style="color:var(--blue)">重置演示</a></div>
   </div>
 </div>
 
@@ -629,12 +676,54 @@ function addSelected(){
  toast('已添加 '+n+' 台摄像机');
 }
 
+/* ─── 登录 / 两步验证 (2FA) 演示 ───
+   对照 Synology《DSM Login Web API Guide》：
+   403 = 需要两步验证码；404 = 验证码认证失败；406 = 强制 2FA。
+   开启 2FA 的账号只输密码会被拒（403），此时自动展开 OTP 输入框。 */
+let lgStep='idle'; // idle / needOtp / rejected / done
+let lgManual2fa=false;
+function toggle2fa(){
+ lgManual2fa=!lgManual2fa;
+ document.getElementById('lg2fa').classList.toggle('on',lgManual2fa);
+ if(lgManual2fa && lgStep==='idle'){lgStep='needOtp';}
+ renderLogin();
+}
+function renderLogin(){
+ const wrap=document.getElementById('lgOtpWrap');
+ const ban=document.getElementById('lgBannerWrap');
+ const showOtp=lgManual2fa||lgStep==='needOtp'||lgStep==='rejected';
+ wrap.innerHTML=showOtp?`<div class="lg-otp"><svg class="ic"><use href="#i-shield"/></svg><input id="lgOtp" maxlength="6" inputmode="numeric" placeholder="000000" value=""/></div>
+   <div class="lg-switch" style="padding-top:0"><svg class="ic sm" style="color:var(--sub)"><use href="#i-checkcircle"/></svg><span class="lbl">信任此设备（下次免验证码）</span><div class="tg" onclick="this.classList.toggle('on')"></div></div>`:'';
+ let b='';
+ if(lgStep==='needOtp')b=`<div class="lg-banner hint"><svg class="ic sm"><use href="#i-info"/></svg><span>该账号已开启两步验证（DSM 返回 403），请输入验证器 App 生成的 6 位验证码后重新登录。</span></div>`;
+ else if(lgStep==='rejected')b=`<div class="lg-banner err"><svg class="ic sm"><use href="#i-alert"/></svg><span>验证码错误或已过期（DSM 返回 404），请等待生成新验证码后重试。</span></div>`;
+ else if(lgStep==='done')b=`<div class="lg-banner hint" style="background:rgba(27,163,106,.12);color:var(--green)"><svg class="ic sm"><use href="#i-checkcircle"/></svg><span>登录成功，已获取 SID / did。信任此设备后，后续登录可免验证码。</span></div>`;
+ ban.innerHTML=b;
+}
+function tryLogin(){
+ const otpEl=document.getElementById('lgOtp');
+ const otp=otpEl?otpEl.value.trim():'';
+ const needOtp=lgManual2fa||lgStep==='needOtp'||lgStep==='rejected';
+ if(!needOtp){
+   // 只输密码：DSM 返回 403 → 自动展开 OTP
+   lgStep='needOtp';renderLogin();
+   toast('DSM 返回 403：需要两步验证码');
+   const el=document.getElementById('lgOtp');if(el)el.focus();
+   return;
+ }
+ if(otp.length!==6){toast('请输入 6 位验证码');return;}
+ if(otp!=='123456'){lgStep='rejected';renderLogin();toast('DSM 返回 404：验证码错误');return;}
+ lgStep='done';renderLogin();toast('登录成功');
+}
+function resetLogin(){lgStep='idle';lgManual2fa=false;document.getElementById('lg2fa').classList.remove('on');renderLogin();toast('演示已重置');}
+
 /* ─── 初始化 ─── */
-setL('g4');renderCams();renderRec();renderAdd();
+setL('g4');renderCams();renderRec();renderAdd();renderLogin();
 setInterval(()=>{const c=document.getElementById('sgClk');if(c)c.textContent=t();document.querySelectorAll('.tile .tm').forEach(e=>e.textContent=t());},1000);
-/* hash 深链：便于直接预览任意页面，如 index.html#v-cam / #p-add / #p-edit */
+/* hash 深链：便于直接预览任意页面，如 index.html#v-cam / #p-add / #p-login */
 (function(){const h=location.hash.slice(1);
  if(h==='p-single')openSingle(0);else if(h==='p-edit')openEdit(0);else if(h==='p-add')openPage('p-add');
+ else if(h==='p-login'){openPage('p-login');lgStep='needOtp';renderLogin();}
  else if(h.startsWith('v-'))go(h);
 })();
 </script>

@@ -1,6 +1,12 @@
-// 登录页：QuickConnect ID / IP / DDNS、HTTPS、端口、账号密码、OTP、记住我。
-// 对齐官方 DS Cam 的登录能力基线；凭据只经 AuthRepository 走安全存储。
+// 登录页：QuickConnect ID / IP / DDNS、HTTPS、端口、账号密码、两步验证（OTP）、
+// 信任此设备（device token）、记住我。
+//
+// 对齐官方 DS Cam 登录基线，并按 Synology《DSM Login Web API Guide》实现完整
+// 2FA 闭环：账号开启两步验证后，仅传密码会收到 403（需验证码），此时自动展开
+// OTP 输入框；验证码错误为 404、强制 2FA 为 406。首次成功且勾选「信任此设备」
+// 会保存 DSM 返回的 did，之后登录免验证码。
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/config/app_config.dart';
@@ -24,13 +30,17 @@ class _LoginPageState extends State<LoginPage> {
   final _password = TextEditingController();
   final _port = TextEditingController();
   final _otp = TextEditingController();
+  final _otpFocus = FocusNode();
 
   bool _https = true;
   bool _remember = true;
-  bool _showOtp = false;
+  bool _twoFactor = false; // 账号已开启两步验证（用户主动勾选 / 服务端 403 自动置真）
+  bool _trustDevice = false;
   bool _obscure = true;
   bool _loading = false;
   String? _error;
+  String? _hint; // 2FA 引导（蓝色提示，区别于红色错误）
+  bool _otpRejected = false; // 上一次验证码被拒（404）
 
   @override
   void dispose() {
@@ -39,6 +49,7 @@ class _LoginPageState extends State<LoginPage> {
     _password.dispose();
     _port.dispose();
     _otp.dispose();
+    _otpFocus.dispose();
     super.dispose();
   }
 
@@ -54,6 +65,7 @@ class _LoginPageState extends State<LoginPage> {
     setState(() {
       _loading = true;
       _error = null;
+      _hint = null;
     });
     try {
       await context.read<AppState>().login(
@@ -62,16 +74,30 @@ class _LoginPageState extends State<LoginPage> {
             password: _password.text,
             https: _https,
             port: _effectivePort(),
-            otpCode: _showOtp && _otp.text.isNotEmpty ? _otp.text : null,
+            otpCode: _twoFactor ? _otp.text.trim() : null,
+            enableDeviceToken: _twoFactor && _trustDevice,
+            deviceName: 'SynoCam iOS',
             remember: _remember,
           );
     } on SynoException catch (e) {
-      // 需要两步验证时自动展开 OTP 输入框。
-      if (e.code == SynoErrorCode.needTwoFactor ||
-          e.code == SynoErrorCode.otpRequired) {
-        setState(() => _showOtp = true);
+      if (e.needsOtp) {
+        // 服务端要求两步验证：自动展开 OTP 框并聚焦，给出针对性引导。
+        setState(() {
+          _twoFactor = true;
+          _otpRejected = e.otpRejected;
+          _hint = e.code == SynoErrorCode.otpRequired
+              ? '该账号已开启两步验证，请输入验证器 App 生成的 6 位验证码后重新登录。'
+              : e.code == SynoErrorCode.otpInvalid
+                  ? '验证码错误或已过期，请等待验证器生成新验证码后重试。'
+                  : '管理员要求此账号必须完成两步验证，请输入验证码。';
+          _error = e.message;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _otpFocus.requestFocus();
+        });
+      } else {
+        setState(() => _error = e.message);
       }
-      setState(() => _error = e.message);
     } catch (e) {
       setState(() => _error = '$e');
     } finally {
@@ -92,7 +118,7 @@ class _LoginPageState extends State<LoginPage> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
                   _brand(),
-                  const SizedBox(height: 34),
+                  const SizedBox(height: 30),
                   _field(
                     controller: _host,
                     label: 'QuickConnect ID / IP / DDNS',
@@ -141,17 +167,34 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     validator: (v) => (v == null || v.isEmpty) ? '请输入密码' : null,
                   ),
-                  if (_showOtp) ...<Widget>[
-                    const SizedBox(height: 14),
-                    _field(
-                      controller: _otp,
-                      label: '两步验证验证码',
-                      icon: AppIcons.shield,
-                      hint: '6 位 OTP',
-                      keyboard: TextInputType.number,
+                  const SizedBox(height: 6),
+                  _switchTile(
+                    '账号已开启两步验证（2FA）',
+                    _twoFactor,
+                    (v) => setState(() {
+                      _twoFactor = v;
+                      _hint = null;
+                      _error = null;
+                      if (v) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted) _otpFocus.requestFocus();
+                        });
+                      }
+                    }),
+                    icon: AppIcons.shield,
+                  ),
+                  if (_twoFactor) ...<Widget>[
+                    const SizedBox(height: 6),
+                    if (_hint != null) _hintBanner(_hint!),
+                    const SizedBox(height: 10),
+                    _otpField(),
+                    _switchTile(
+                      '信任此设备（下次免验证码）',
+                      _trustDevice,
+                      (v) => setState(() => _trustDevice = v),
+                      icon: AppIcons.checkCircle,
                     ),
                   ],
-                  const SizedBox(height: 8),
                   _switchTile(
                       '使用 HTTPS',
                       _https,
@@ -161,7 +204,7 @@ class _LoginPageState extends State<LoginPage> {
                           })),
                   _switchTile(
                       '记住我', _remember, (v) => setState(() => _remember = v)),
-                  if (_error != null) _errorBanner(_error!),
+                  if (_error != null && !_twoFactor) _errorBanner(_error!),
                   const SizedBox(height: 18),
                   SizedBox(
                     height: 52,
@@ -255,13 +298,75 @@ class _LoginPageState extends State<LoginPage> {
         ),
       );
 
-  Widget _switchTile(String label, bool value, ValueChanged<bool> onChanged) =>
+  Widget _otpField() => TextFormField(
+        controller: _otp,
+        focusNode: _otpFocus,
+        keyboardType: TextInputType.number,
+        textInputAction: TextInputAction.done,
+        onFieldSubmitted: (_) {
+          if (!_loading) _submit();
+        },
+        maxLength: 6,
+        autofillHints: const <String>[AutofillHints.oneTimeCode],
+        inputFormatters: <TextInputFormatter>[
+          FilteringTextInputFormatter.digitsOnly,
+        ],
+        validator: (v) {
+          if (!_twoFactor) return null;
+          final s = v?.trim() ?? '';
+          if (s.isEmpty) return '请输入 6 位两步验证验证码';
+          if (s.length != 6) return '验证码应为 6 位数字';
+          return null;
+        },
+        decoration: InputDecoration(
+          labelText: '两步验证验证码（6 位）',
+          hintText: '000000',
+          counterText: '',
+          errorStyle: TextStyle(
+              color: _otpRejected ? AppColors.red : null, fontSize: 11),
+          prefixIcon: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: AppIcon(AppIcons.shield, size: 18),
+          ),
+          prefixIconConstraints:
+              const BoxConstraints(minWidth: 42, minHeight: 42),
+        ),
+      );
+
+  Widget _switchTile(String label, bool value, ValueChanged<bool> onChanged,
+          {IconData? icon}) =>
       Row(
         children: <Widget>[
           Switch(value: value, onChanged: onChanged),
           const SizedBox(width: 4),
-          Text(label, style: const TextStyle(fontSize: 13)),
+          if (icon != null) ...<Widget>[
+            AppIcon(icon, size: 14, color: AppColors.sub),
+            const SizedBox(width: 5),
+          ],
+          Expanded(
+            child: Text(label, style: const TextStyle(fontSize: 13)),
+          ),
         ],
+      );
+
+  Widget _hintBanner(String msg) => Container(
+        padding: const EdgeInsets.all(11),
+        decoration: BoxDecoration(
+          color: AppColors.blueSoft,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const AppIcon(AppIcons.info, size: 17, color: AppColors.blue),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(msg,
+                  style:
+                      const TextStyle(fontSize: 11.5, color: AppColors.blue)),
+            ),
+          ],
+        ),
       );
 
   Widget _errorBanner(String msg) => Container(

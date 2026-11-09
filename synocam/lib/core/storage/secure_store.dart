@@ -16,6 +16,12 @@ abstract class SecureStore {
   Future<SynoSession?> readSession();
   Future<void> saveCredentials(String account, String password);
   Future<Credentials?> readCredentials();
+
+  /// 两步验证「信任此设备」令牌（DSM 返回的 did）。按 host|account 分键保存，
+  /// 使同一 NAS 上不同账号互不串用；后续登录带 device_id 即可免验证码。
+  Future<void> saveDeviceId(String host, String account, String did);
+  Future<String?> readDeviceId(String host, String account);
+
   Future<void> clear();
 }
 
@@ -24,6 +30,7 @@ class InMemorySecureStore implements SecureStore {
   SynoSession? _session;
   String? _account;
   String? _password;
+  final Map<String, String> _deviceIds = <String, String>{};
 
   @override
   Future<void> saveSession(SynoSession session) async => _session = session;
@@ -43,10 +50,21 @@ class InMemorySecureStore implements SecureStore {
     return Credentials(_account!, _password!);
   }
 
+  String _deviceKey(String host, String account) => '$host|$account';
+
+  @override
+  Future<void> saveDeviceId(String host, String account, String did) async =>
+      _deviceIds[_deviceKey(host, account)] = did;
+
+  @override
+  Future<String?> readDeviceId(String host, String account) async =>
+      _deviceIds[_deviceKey(host, account)];
+
   @override
   Future<void> clear() async {
     _session = null;
     _account = null;
     _password = null;
+    _deviceIds.clear();
   }
 }

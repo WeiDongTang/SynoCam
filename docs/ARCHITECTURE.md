@@ -41,15 +41,32 @@
 ```
 1) auth.cgi?api=SYNO.API.Auth&method=login&version=6
            &account=&passwd=&session=SurveillanceStation&format=sid
-   ← { success:true, data:{ sid, did } }        失败 ← error.code(400/403/404/…)
+           [&otp_code=xxxxxx] [&enable_device_token=yes&device_name=…]
+           [&device_id=…]   ← 已信任设备时免验证码
+   ← { success:true, data:{ sid, did } }        失败 ← error.code(400/403/404/406/…)
 2) 之后所有调用 entry.cgi?api=SYNO.SurveillanceStation.<X>&version=N
            &method=<M>&_sid=<sid>&…
-3) 106/107/402 → SynoException.needsReLogin → UI 回登录页
-4) logout → Auth/logout + 清空 SecureStore
+3) 106/107/402/119 → SynoException.needsReLogin → UI 回登录页
+4) 403/404/406 → SynoException.needsOtp → 登录页展开 / 保持 OTP 输入
+5) logout → Auth/logout + 清空 SecureStore
 ```
 
 - 端口：HTTP `5000` / HTTPS `5001`；host 自带 `https://` 自动切 5001。
-- `otp_code` 支持两步验证（DSM 返回 404/405 时登录页自动展开 OTP 输入）。
+- **两步验证（2FA，依据 Synology《DSM Login Web API Guide》官方错误码表）**：
+
+  | 码 | 官方含义 | App 行为 |
+  |---|---|---|
+  | 400 | 账号不存在或密码错误 | 显示错误，不展开 OTP |
+  | **403** | **需要两步验证码** | `needsOtp` → 展开 OTP 框、聚焦、蓝色引导 |
+  | **404** | **验证码认证失败** | `needsOtp`+`otpRejected` → 保持 OTP、提示重新输入 |
+  | 406 | 强制要求完成 2FA | `needsOtp` → 展开 OTP |
+  | 407/408/409/410 | IP 封锁 / 密码过期 / 需改密 | 直接展示对应文案 |
+
+  > ⚠️ 早期实现曾把 403 误标为「密码错误」、把 404/405 当作「需要两步验证」，
+  > 导致开启 2FA 的账号只输密码时看到误导性报错且 OTP 框永不弹出。已按官方定义校正。
+- **信任此设备（免二次验证）**：首次带 `otp_code` + `enable_device_token=yes` +
+  `device_name` 登录成功，DSM 返回 `did`；`SecureStore` 按 `host|account` 持久化，
+  之后登录仅带 `device_id` 即可免验证码（官方 Example 4），对齐 DS Cam「受信连接」。
 - 版本以 `SYNO.API.defaultVersions` 兜底，生产应先用 `SYNO.API.Info/query` 协商 maxVersion。
 
 ### 核心 API 映射
@@ -94,7 +111,7 @@
 | `--green/red/amber` | 状态色 | 在线/告警/待机 |
 | `--sh` / 圆角 15 | `CardThemeData` / `BorderRadius` | 柔和悬浮 |
 
-`app_theme.dart` 用 `WidgetState*` / `CardThemeData` 构建明暗主题，iOS Large Title、分段控件、grouped list 由各页面 widget 还原。
+`app_theme.dart` 用 `WidgetState*` / `CardTheme` 构建明暗主题（CI pin Flutter 3.24.5，`CardThemeData` 属 3.27+ 不可用），iOS Large Title、分段控件、grouped list 由各页面 widget 还原。
 
 ---
 
@@ -102,12 +119,12 @@
 
 | 验证项 | 命令 | 结果 |
 |--------|------|------|
-| 协议/模型/开关逻辑 | `dart run tool/verify_core.dart` | ✅ 28 项断言通过 |
+| 协议/模型/开关/2FA 逻辑 | `dart run tool/verify_core.dart` | ✅ 49 项断言通过（含 21 项 2FA/设备令牌） |
 | 纯 Dart 层静态分析 | `dart analyze <core/config,network,storage,models,tool>` | ✅ No issues found |
 | 全量语法可解析 | `dart format --output=none lib tool test` | ✅ 30 文件无 parse error |
-| 引用一致性 | 自检脚本（相对 import / package:synocam / AppIcons / 依赖声明） | ✅ 全通过 |
+| 引用一致性 | 自检脚本（相对 import / package:synocam / AppIcons / AppColors / 异常成员 / login 调用链签名） | ✅ 全通过 |
 | ARB / YAML 合法性 | json/yaml 解析 + 中英 key 集合比对 | ✅ 通过 |
-| UI 原型图标渲染 | 无头 Chromium 8 页截图 | ✅ 完整/居中/一致 |
+| UI 原型图标渲染 | 无头 Chromium 截图（8 主态 + 2FA 登录 3 态） | ✅ 完整/居中/一致，viewBox 齐全 |
 
 **未在本机完成**：`flutter analyze`（全 UI）、`flutter build`、`flutter test`（需 `package:flutter` + 现代 SDK）。
 本机仅 Flutter 3.0.0 / Dart 2.17，低于工程 `>=3.5` 约束且无 Xcode/Android SDK。

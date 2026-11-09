@@ -78,6 +78,63 @@ Future<void> main() async {
   check(threw, 'requireData 抛出携带错误码的 SynoException');
   check(SynoException.fromCode(107).needsReLogin, '会话失效标记需重登');
 
+  print('── 两步验证（2FA）/ DSM Login Web API Guide ──');
+  // 官方：403=需要验证码、404=验证码失败、406=强制2FA、400=账号或密码错误。
+  check(SynoErrorCode.otpRequired == 403, '403 = 需要两步验证码');
+  check(SynoErrorCode.otpInvalid == 404, '404 = 验证码认证失败');
+  check(SynoErrorCode.otpEnforced == 406, '406 = 强制要求两步验证');
+  check(SynoErrorCode.badCredentials == 400, '400 = 账号或密码错误');
+  check(
+      SynoErrorCode.describe(403).contains('两步验证') &&
+          SynoErrorCode.describe(403).contains('验证码'),
+      '403 文案引导输入验证码（不再误报密码错误）');
+  check(SynoErrorCode.describe(404).contains('验证码错误'), '404 文案提示验证码错误');
+  check(SynoException.fromCode(403).needsOtp, '403 → needsOtp');
+  check(SynoException.fromCode(404).needsOtp, '404 → needsOtp');
+  check(SynoException.fromCode(406).needsOtp, '406 → needsOtp');
+  check(!SynoException.fromCode(400).needsOtp, '400 不触发 OTP（真·密码错误）');
+  check(SynoException.fromCode(404).otpRejected, '404 → otpRejected');
+  check(!SynoException.fromCode(403).otpRejected, '403 非 otpRejected');
+  check(!SynoException.fromCode(403).needsReLogin, '403 不应误判为会话失效');
+
+  // 带 otp_code + 设备令牌的登录 URL。
+  final otpUrl = buildSynoUrl(
+    host: '192.168.1.10',
+    cgi: SynoEndpoints.authCgi,
+    https: true,
+    query: <String, String?>{
+      'api': SynoApi.auth,
+      'version': '6',
+      'method': 'login',
+      'account': 'admin',
+      'passwd': 'pw',
+      'otp_code': '123456',
+      'enable_device_token': 'yes',
+      'device_name': 'SynoCam iOS',
+    },
+  );
+  check(otpUrl.contains('otp_code=123456'), 'otp_code 正确透传');
+  check(otpUrl.contains('enable_device_token=yes'), '设备令牌开关透传');
+  check(otpUrl.contains('device_name=SynoCam'), '设备名透传');
+
+  // 免验证码登录：只带 device_id，不带 otp_code。
+  final trustedUrl = buildSynoUrl(
+    host: '192.168.1.10',
+    cgi: SynoEndpoints.authCgi,
+    https: true,
+    query: <String, String?>{
+      'api': SynoApi.auth,
+      'version': '6',
+      'method': 'login',
+      'device_id': 'DID-XYZ',
+      'device_name': 'SynoCam iOS',
+    },
+  );
+  check(
+      trustedUrl.contains('device_id=DID-XYZ') &&
+          !trustedUrl.contains('otp_code'),
+      '信任设备登录只带 device_id，不带 otp_code');
+
   print('── Camera 模型映射 ──');
   final cams = Camera.listFromData(<String, dynamic>{
     'cameras': <Map<String, dynamic>>[
@@ -107,10 +164,20 @@ Future<void> main() async {
   final store = InMemorySecureStore();
   await store.saveSession(s);
   await store.saveCredentials('admin', 'secret');
+  await store.saveDeviceId('nas.example.com', 'admin', 'DID-1');
+  await store.saveDeviceId('nas.example.com', 'guest', 'DID-2');
   check((await store.readSession())!.sid == 'S1', '会话持久化');
   check((await store.readCredentials())!.password == 'secret', '凭据持久化');
+  check(await store.readDeviceId('nas.example.com', 'admin') == 'DID-1',
+      '设备令牌按 host|account 保存');
+  check(await store.readDeviceId('nas.example.com', 'guest') == 'DID-2',
+      '同 NAS 不同账号令牌互不串用');
+  check(
+      await store.readDeviceId('other.nas', 'admin') == null, '未信任的 host 无令牌');
   await store.clear();
   check(await store.readSession() == null, 'clear 清空');
+  check(await store.readDeviceId('nas.example.com', 'admin') == null,
+      'clear 同时清空设备令牌');
 
   print('── FeatureFlags ──');
   final flags = FeatureFlags();

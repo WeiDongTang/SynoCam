@@ -91,9 +91,13 @@ Synology NAS · Surveillance Station 9.x (官方公开 Web API)
 
 ## 🎨 UI 定稿（方案 A · Aurora 浅色原生）
 
-打开 [`ui/index.html`](ui/index.html) 查看**可交互定稿原型**。设计语言：浅灰底 + 纯白分组卡片 + iOS 蓝 + 大留白；**统一 SVG 线性图标库**（本次已修 viewBox 裁切/错位）。信息架构对齐官方 **5 主 tab + 3 二级页**。
+打开 [`ui/index.html`](ui/index.html) 查看**可交互定稿原型**。设计语言：浅灰底 + 纯白分组卡片 + iOS 蓝 + 大留白；**统一 SVG 线性图标库**（已修 viewBox 裁切/错位）。信息架构对齐官方 **5 主 tab + 4 二级页**（新增 2FA 登录演示）。
 
-深链直达：`index.html#v-live` / `#v-cam` / `#v-rec` / `#v-alert` / `#v-set` / `#p-single` / `#p-edit` / `#p-add`
+深链直达：`index.html#v-live` / `#v-cam` / `#v-rec` / `#v-alert` / `#v-set` / `#p-single` / `#p-edit` / `#p-add` / **`#p-login`**（两步验证登录，默认 403 态）
+
+> **两步验证（2FA）**：账号开启二次验证后只输密码，DSM 返回 **403（需要验证码）**。
+> App 与原型均按官方《DSM Login Web API Guide》实现闭环：403/404/406 → 自动展开 OTP 输入框，
+> 支持「信任此设备」保存 `did` 免验证码。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 第 2 节。
 
 ---
 

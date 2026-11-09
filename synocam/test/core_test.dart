@@ -73,6 +73,69 @@ void main() {
     });
   });
 
+  group('两步验证 2FA（DSM Login Web API Guide）', () {
+    test('官方错误码定义', () {
+      expect(SynoErrorCode.badCredentials, 400); // 账号或密码错误
+      expect(SynoErrorCode.otpRequired, 403); // 需要两步验证码
+      expect(SynoErrorCode.otpInvalid, 404); // 验证码认证失败
+      expect(SynoErrorCode.otpEnforced, 406); // 强制要求 2FA
+    });
+
+    test('403 文案引导输入验证码，而非误报密码错误', () {
+      final msg = SynoErrorCode.describe(403);
+      expect(msg.contains('两步验证'), isTrue);
+      expect(msg.contains('验证码'), isTrue);
+      expect(msg.contains('密码错误'), isFalse);
+      expect(SynoErrorCode.describe(404).contains('验证码错误'), isTrue);
+    });
+
+    test('needsOtp / otpRejected 判定', () {
+      for (final code in <int>[403, 404, 406]) {
+        expect(SynoException.fromCode(code).needsOtp, isTrue,
+            reason: '$code 应触发 OTP 输入框');
+      }
+      expect(SynoException.fromCode(400).needsOtp, isFalse);
+      expect(SynoException.fromCode(403).needsReLogin, isFalse);
+      expect(SynoException.fromCode(404).otpRejected, isTrue);
+      expect(SynoException.fromCode(403).otpRejected, isFalse);
+    });
+
+    test('登录 URL 透传 otp_code 与设备令牌', () {
+      final url = buildSynoUrl(
+        host: '192.168.1.10',
+        cgi: SynoEndpoints.authCgi,
+        https: true,
+        query: <String, String?>{
+          'api': SynoApi.auth,
+          'version': '6',
+          'method': 'login',
+          'otp_code': '123456',
+          'enable_device_token': 'yes',
+          'device_name': 'SynoCam iOS',
+        },
+      );
+      expect(url.contains('otp_code=123456'), isTrue);
+      expect(url.contains('enable_device_token=yes'), isTrue);
+      expect(url.contains('device_name=SynoCam'), isTrue);
+    });
+
+    test('空 otp_code 被剔除，信任设备登录不带验证码', () {
+      final url = buildSynoUrl(
+        host: '192.168.1.10',
+        cgi: SynoEndpoints.authCgi,
+        https: true,
+        query: <String, String?>{
+          'api': SynoApi.auth,
+          'method': 'login',
+          'otp_code': null,
+          'device_id': 'DID-1',
+        },
+      );
+      expect(url.contains('otp_code'), isFalse);
+      expect(url.contains('device_id=DID-1'), isTrue);
+    });
+  });
+
   group('Camera 字段别名映射', () {
     test('SS 多版本字段兼容解析', () {
       final cams = Camera.listFromData(<String, dynamic>{

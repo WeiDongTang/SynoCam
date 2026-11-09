@@ -40,7 +40,14 @@
 - [x] HTTPS（SSL/TLS）+ 自签名证书手动信任
 - [x] 局域网自动发现（mDNS/SSDP）
 - [x] 登录历史 + "Remember me" + 多账号切换
-- [x] 2FA 兼容（官方 API 需处理 OTP 二次校验流程）
+- [x] 2FA 兼容（OTP 二次校验 + 信任此设备免验证码）
+
+> **Phase 1 落地补记（2FA）**：按 Synology《DSM Login Web API Guide》官方错误码实现完整
+> 闭环 —— 403「需要验证码」/404「验证码失败」/406「强制 2FA」→ 登录页自动展开 OTP
+> 输入框；首次 `otp_code`+`enable_device_token=yes` 成功返回 `did` 后按 `host|account`
+> 持久化，后续仅带 `device_id` 免验证码登录。修正了早期把 403 误标「密码错误」、
+> 用 404/405 判定「需要 2FA」导致 2FA 账号登录报错且 OTP 框不弹出的缺陷。
+> UI 原型新增 `p-login` 演示页（`#p-login` 直达，设置页「账户与服务器」入口）。
 
 ### 3.2 多画面（Multi View）
 - [x] 布局 1×2 / 1×3 / 2×2 / 2×3，自定义相机与顺序

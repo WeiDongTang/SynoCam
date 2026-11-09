@@ -26,3 +26,6 @@ synocam/.dart_tool/flutter_gen/
 .env
 *.env
 **/key.properties
+
+# 构建产物（由 CI artifact 分发，不入库）
+*.ipa

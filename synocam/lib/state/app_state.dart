@@ -76,6 +76,10 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 该 NAS+账号是否已保存「信任此设备」令牌（可免二次验证）。
+  Future<String?> deviceId(String host, String account) =>
+      _auth.deviceId(host, account);
+
   Future<void> login({
     required String host,
     required String account,
@@ -83,6 +87,8 @@ class AppState extends ChangeNotifier {
     bool https = false,
     int? port,
     String? otpCode,
+    bool enableDeviceToken = false,
+    String? deviceName,
     bool remember = true,
   }) async {
     _error = null;
@@ -93,6 +99,8 @@ class AppState extends ChangeNotifier {
       https: https,
       port: port,
       otpCode: otpCode,
+      enableDeviceToken: enableDeviceToken,
+      deviceName: deviceName,
       remember: remember,
     );
     await refreshCameras();

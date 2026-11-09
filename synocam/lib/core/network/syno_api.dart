@@ -163,25 +163,45 @@ class SynoApiError {
   final int code;
 }
 
-/// DSM / SS 常见错误码（不同套件版本略有差异，未命中时降级为通用描述）。
+/// DSM / SS 错误码。
+///
+/// 400–410 来自 Synology 官方《DSM Login Web API Guide》中
+/// SYNO.API.Auth 的 "API Error Codes" 表；100–119 为 DSM 通用错误码。
+///
+/// 重要：账号开启两步验证（2FA）后，login 只带 passwd 不带 otp_code 时
+/// 返回的是 **403（需要验证码）**，验证码错误返回 **404**。早期实现曾把
+/// 403 误标成「密码错误」、把 404/405 当作「需要两步验证」，导致 2FA 用户
+/// 看到误导性报错且 OTP 输入框永远不弹出 —— 本表已按官方定义校正。
 class SynoErrorCode {
   SynoErrorCode._();
 
+  // ── DSM 通用错误码 ──
   static const int unknown = 100;
   static const int invalidParameter = 101;
   static const int apiNotExist = 102;
   static const int methodNotExist = 103;
   static const int versionNotSupported = 104;
+  static const int noPermission = 105;
   static const int sessionTimeout = 106;
   static const int duplicateLogin = 107;
-  static const int invalidAccount = 400;
-  static const int accountDisabled = 401;
-  static const int permissionDenied = 402;
-  static const int wrongPassword = 403;
-  static const int needTwoFactor = 404;
-  static const int otpRequired = 405;
-  static const int ipBlocked = 407;
-  static const int passwordExpired = 408;
+  static const int invalidSession = 119;
+
+  // ── SYNO.API.Auth / login 官方错误码 ──
+  static const int badCredentials = 400; // 账号不存在或密码错误
+  static const int accountDisabled = 401; // 账号已停用
+  static const int permissionDenied = 402; // 权限不足
+  static const int otpRequired = 403; // 需要两步验证码
+  static const int otpInvalid = 404; // 两步验证码认证失败
+  static const int otpEnforced = 406; // 强制要求启用 / 完成两步验证
+  static const int ipBlocked = 407; // IP 已被封锁
+  static const int passwordExpiredNoChange = 408; // 密码过期且不可自行修改
+  static const int passwordExpired = 409; // 密码已过期
+  static const int passwordMustChange = 410; // 必须修改密码
+
+  // 兼容旧调用的别名（语义已按官方定义校正，勿再按字面理解）。
+  static const int invalidAccount = badCredentials;
+  static const int wrongPassword = badCredentials;
+  static const int needTwoFactor = otpRequired;
 
   static String describe(int code) {
     const m = <int, String>{
@@ -193,15 +213,17 @@ class SynoErrorCode {
       105: '当前账号无权限执行此操作',
       106: '会话已超时，请重新登录',
       107: '会话被重复登录挤下线',
+      119: '会话无效，请重新登录',
       400: '账号不存在或密码错误',
       401: '账号已被停用',
-      402: '权限不足',
-      403: '密码错误',
-      404: '需要两步验证验证码',
-      405: '需要一次性验证码（OTP）',
-      406: '需要强制修改密码',
-      407: 'IP 已被临时封锁',
-      408: '密码已过期',
+      402: '权限不足，请确认账号具备 Surveillance Station 访问权限',
+      403: '该账号已开启两步验证，请输入 6 位验证码',
+      404: '两步验证码错误或已过期，请重新输入',
+      406: '管理员要求必须完成两步验证，请先在 DSM 完成设置',
+      407: 'IP 已被临时封锁，请稍后再试',
+      408: '密码已过期且无法自行修改，请联系管理员',
+      409: '密码已过期，请修改后重试',
+      410: '首次登录或密码被重置，请先修改密码',
     };
     return m[code] ?? '请求失败（错误码 $code）';
   }
@@ -221,7 +243,18 @@ class SynoException implements Exception {
   bool get needsReLogin =>
       code == SynoErrorCode.sessionTimeout ||
       code == SynoErrorCode.duplicateLogin ||
-      code == SynoErrorCode.permissionDenied;
+      code == SynoErrorCode.permissionDenied ||
+      code == SynoErrorCode.invalidSession;
+
+  /// 两步验证相关错误 → UI 应展开 / 保持 OTP 输入框并允许重新提交。
+  /// 403 = 需要输入验证码；404 = 验证码错误需重试；406 = 强制要求 2FA。
+  bool get needsOtp =>
+      code == SynoErrorCode.otpRequired ||
+      code == SynoErrorCode.otpInvalid ||
+      code == SynoErrorCode.otpEnforced;
+
+  /// 验证码被拒绝（区别于「首次需要输入验证码」），用于聚焦与文案。
+  bool get otpRejected => code == SynoErrorCode.otpInvalid;
 
   @override
   String toString() => 'SynoException($code): $message';
