@@ -64,6 +64,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _toggleLock(AppState state, Recording r) async {
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       await state.setRecordingLocked(r, !r.locked);
@@ -93,6 +94,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
       ),
     );
     if (ok != true) return;
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       await state.deleteRecording(r);

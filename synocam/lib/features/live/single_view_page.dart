@@ -11,7 +11,6 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
 import '../../core/utils/launcher.dart';
 import '../../data/models/camera.dart';
-import '../../data/models/media.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
 import '../../widgets/live_snapshot.dart';
@@ -239,8 +238,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
     switch (label) {
       case '快照':
         _run(() async {
-          final bytes = await state.takeSnapshot(cam.id);
-          if (!mounted) return;
+          final bytes = await state.takeSnapshot(cam);
+          if (!context.mounted) return;
           await showDialog<void>(
             context: context,
             builder: (ctx) => AlertDialog(

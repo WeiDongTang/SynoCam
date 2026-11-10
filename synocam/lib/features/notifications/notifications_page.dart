@@ -87,7 +87,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                         ? null
                         : () async {
                             await state.markAllEventsRead();
-                            if (mounted) {
+                            if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(content: Text('已在本机标记全部已读')));
                             }
@@ -179,8 +179,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
         onTap: () async {
           await state.markEventRead(e.id);
         },
-        leading: BadgeIcon(meta.key,
-            tone: read ? IconTone.neutral : meta.value,
+        leading: BadgeIcon(meta.$1,
+            tone: read ? IconTone.neutral : meta.$2,
             boxSize: 38,
             iconSize: 18),
         title: Text(e.title,

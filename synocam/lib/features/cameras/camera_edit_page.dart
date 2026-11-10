@@ -144,7 +144,7 @@ class _CameraEditPageState extends State<CameraEditPage> {
             onPressed: () async {
               try {
                 await state.toggleCamera(cam, false);
-                if (mounted) {
+                if (context.mounted) {
                   _snack('已在 NAS 停用该摄像机');
                   Navigator.of(context).pop();
                 }
