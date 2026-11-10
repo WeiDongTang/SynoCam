@@ -1,17 +1,15 @@
 // 单摄像头页「内嵌回放视口」：拖动预览画面下方的时间轴后，直接在原预览区
-// 回放选中时刻，不必跳转到 PlaybackPage。
+// 回放选中时刻的真实 NAS 画面，不必跳转到 PlaybackPage。
 //
-// 数据链路与完整回放页一致，全部为 NAS 真实数据：
-//  1. Recording/Download 下载真实片段 → video_player 从「选中时刻 - 片段起点」
-//     的偏移起播（这就是「回放的不是选中时刻」的修复点）；
-//  2. 失败降级 VideoStreaming/Stream 带 startTime=选中时刻的 MJPEG 回放流；
-//  3. 都不支持时展示真实诊断，绝不伪造画面。
+// 数据链路（全部真实，绝不把实时画面冒充回放）：
+//  1. Recording/Download 以「cameraId + startTime(选中时刻) + stopTime」
+//     请求该时刻起的真实录像 → video_player 从头播（按 id 下载整段时 seek
+//     到「选中时刻 - 片段起点」）；
+//  2. 失败时用按时刻历史帧接口取那一刻的真实历史快照（非实时画面）；
+//  3. 都失败展示真实诊断。旧实现降级到 VideoStreaming/Stream 实时流，导致
+//     拖动到任何时刻都只看到实时画面，已从根上删除。
 //
-// 设计要点：
-//  - 同一片段内再次拖动只 seek，不重新下载，拖动跟手；
-//  - 画面用 ValueNotifier 局部重绘、gaplessPlayback，避免换帧闪烁；
-//  - 加载 / 等待首帧期间显示中性态，只有确定失败才显示错误。
-import 'dart:async';
+// 全屏：复用同一个 controller，支持左右滑动快进快退 / 长按 3x 快进。
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -19,14 +17,14 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 
-import '../../core/network/mjpeg_stream.dart';
 import '../../core/network/syno_api.dart';
 import '../../core/theme/app_colors.dart';
 import '../../data/models/camera.dart';
 import '../../data/models/media.dart';
 import '../../state/app_state.dart';
+import '../../widgets/fullscreen_stage.dart';
 
-enum _Phase { loading, video, streamPending, streamLive, failed }
+enum _Phase { loading, video, frame, failed }
 
 class InlinePlayback extends StatefulWidget {
   const InlinePlayback({
@@ -56,17 +54,17 @@ class InlinePlayback extends StatefulWidget {
 
 class _InlinePlaybackState extends State<InlinePlayback> {
   VideoPlayerController? _controller;
-  StreamSubscription<Uint8List>? _frameSub;
-  final ValueNotifier<Uint8List?> _frames = ValueNotifier<Uint8List?>(null);
+  final ValueNotifier<Uint8List?> _frame = ValueNotifier<Uint8List?>(null);
   final ValueNotifier<Duration> _position =
       ValueNotifier<Duration>(Duration.zero);
+  final ValueNotifier<bool> _playingValue = ValueNotifier<bool>(false);
 
   _Phase _phase = _Phase.loading;
-  bool _playing = false;
-  bool _gotFirstFrame = false;
   String? _error;
   String _diagnostic = '';
   String _sourceLabel = '';
+  String _frameTimeLabel = '';
+  double _speed = 1.0;
   Directory? _tempDir;
 
   @override
@@ -84,14 +82,8 @@ class _InlinePlaybackState extends State<InlinePlayback> {
         old.camera.id != widget.camera.id;
     final seekChanged = old.seekTo != widget.seekTo;
     if (!clipChanged && !seekChanged) return;
-    if (!clipChanged && seekChanged) {
-      final c = _controller;
-      if (c != null && c.value.isInitialized) {
-        // 同一片段内再次拖动：直接 seek，避免每次松手都重新下载片段。
-        unawaited(_seekToSelected(c));
-        return;
-      }
-    }
+    // 每次选中时刻 / 片段变化都重新按该时刻加载真实数据，
+    // 保证「拖动到哪就回放哪」，而不是留在旧片段里 seek 或播实时画面。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _load(context.read<AppState>());
     });
@@ -99,11 +91,11 @@ class _InlinePlaybackState extends State<InlinePlayback> {
 
   @override
   void dispose() {
-    _frameSub?.cancel();
     _controller?.removeListener(_tick);
     _controller?.dispose();
-    _frames.dispose();
+    _frame.dispose();
     _position.dispose();
+    _playingValue.dispose();
     try {
       _tempDir?.deleteSync(recursive: true);
     } catch (_) {
@@ -113,31 +105,15 @@ class _InlinePlaybackState extends State<InlinePlayback> {
   }
 
   Future<void> _clearMedia() async {
-    _frameSub?.cancel();
-    _frameSub = null;
     final c = _controller;
     if (c != null) {
       c.removeListener(_tick);
       await c.dispose();
     }
     _controller = null;
-    _frames.value = null;
+    _frame.value = null;
     _position.value = Duration.zero;
-    _gotFirstFrame = false;
-    _playing = false;
-  }
-
-  /// 把播放器定位到「选中时刻」在片段内的偏移并起播。
-  Future<void> _seekToSelected(VideoPlayerController c) async {
-    if (!c.value.isInitialized) return;
-    var secs = TimelineMath.seekSecondsInClip(widget.recording, widget.seekTo);
-    final max = c.value.duration.inSeconds;
-    if (max > 0 && secs > max) secs = max;
-    final target = Duration(seconds: secs);
-    await c.seekTo(target);
-    _position.value = target;
-    if (!c.value.isPlaying) await c.play();
-    if (mounted) setState(() => _playing = true);
+    _playingValue.value = false;
   }
 
   void _tick() {
@@ -152,12 +128,14 @@ class _InlinePlaybackState extends State<InlinePlayback> {
       _error = null;
       _diagnostic = '';
       _sourceLabel = '';
+      _frameTimeLabel = '';
     });
     await _clearMedia();
 
-    // 路径 1：下载真实片段 → 从选中时刻起播。
+    // 路径 1：下载从选中时刻开始的真实录像 → 从头播。
     try {
-      final rec = await state.downloadRecording(widget.recording);
+      final rec =
+          await state.downloadRecording(widget.recording, at: widget.seekTo);
       final dir = await Directory.systemTemp.createTemp('synocam_inline_');
       final file = File('${dir.path}/clip${rec.extension}');
       await file.writeAsBytes(rec.bytes, flush: true);
@@ -165,13 +143,14 @@ class _InlinePlaybackState extends State<InlinePlayback> {
       final c = VideoPlayerController.file(file);
       await c.initialize();
       c.addListener(_tick);
-      await _seekToSelected(c);
+      await c.setPlaybackSpeed(_speed);
+      await _seekToFileStart(c, rec.startsAt);
       if (mounted) {
         setState(() {
           _controller = c;
           _phase = _Phase.video;
-          _playing = true;
-          _sourceLabel = 'NAS 录像文件（${rec.source}）· ${rec.contentType}';
+          _playingValue.value = true;
+          _sourceLabel = 'NAS 真实录像（${rec.source}）· ${rec.contentType}';
         });
       }
       return;
@@ -187,74 +166,81 @@ class _InlinePlaybackState extends State<InlinePlayback> {
         }
         return;
       }
-      // 先只记诊断，后面还有回放流兜底，不立刻渲染错误态。
       _diagnostic = '录像文件回放失败：$e';
     }
 
-    // 路径 2：MJPEG 回放流，startTime 用「选中时刻」而非片段起点。
+    // 路径 2：按时刻真实历史帧（非实时画面）。
+    await _loadHistoryFrame(state, widget.seekTo);
+  }
+
+  Future<void> _seekToFileStart(
+      VideoPlayerController c, DateTime? startsAt) async {
+    if (!c.value.isInitialized) return;
+    var secs = 0;
+    if (startsAt != null) {
+      secs = widget.seekTo.difference(startsAt).inSeconds;
+    } else {
+      secs = TimelineMath.seekSecondsInClip(widget.recording, widget.seekTo);
+    }
+    final max = c.value.duration.inSeconds;
+    if (secs < 0) secs = 0;
+    if (max > 0 && secs > max) secs = max;
+    final target = Duration(seconds: secs);
+    _position.value = target;
+    if (secs > 0) await c.seekTo(target);
+    if (!c.value.isPlaying) await c.play();
+  }
+
+  Future<void> _loadHistoryFrame(AppState state, DateTime at) async {
     try {
-      final fromDt = widget.seekTo.isBefore(widget.recording.startTime)
-          ? widget.recording.startTime
-          : widget.seekTo;
-      final from = fromDt.millisecondsSinceEpoch ~/ 1000;
-      var to = widget.recording.playbackEndTime.millisecondsSinceEpoch ~/ 1000;
-      if (to <= from) to = from + 60;
-      final url =
-          state.liveStreamUrl(widget.camera, startTime: from, endTime: to);
-      final client =
-          MjpegStreamClient(url: url, cookie: state.cookieHeader, maxFps: 20);
-      _frameSub = client.frames().listen(
-        (Uint8List frame) {
-          _frames.value = frame;
-          if (!_gotFirstFrame) {
-            _gotFirstFrame = true;
-            if (mounted) setState(() => _phase = _Phase.streamLive);
-          }
-        },
-        onError: (Object e) {
-          if (_gotFirstFrame) {
-            _diagnostic = '回放流中断：$e';
-            return;
-          }
-          if (needsReLoginError(e)) {
-            state.reportSessionExpired();
-            return;
-          }
-          if (mounted) {
-            setState(() {
-              _error = '回放流不可用：$e';
-              _phase = _Phase.failed;
-            });
-          }
-        },
-        cancelOnError: false,
-      );
+      final bytes = await state.recordingFrameAt(widget.camera, at);
       if (mounted) {
         setState(() {
-          _phase = _Phase.streamPending;
-          _sourceLabel = 'MJPEG 回放流（startTime=$from, endTime=$to）';
+          _frame.value = Uint8List.fromList(bytes);
+          _phase = _Phase.frame;
+          _sourceLabel = 'NAS 历史帧（按时刻录像快照）';
+          _frameTimeLabel = state.timeFull(at);
         });
       }
-      unawaited(Future<void>.delayed(const Duration(seconds: 10)).then((_) {
-        if (!mounted || _phase != _Phase.streamPending) return;
-        if (_frames.value == null) {
-          setState(() {
-            _error ??= '回放流在 10 秒内未返回画面';
-            _phase = _Phase.failed;
-          });
-        }
-      }));
       return;
     } catch (e) {
-      _diagnostic += '\n回放流启动失败：$e';
+      if (needsReLoginError(e)) {
+        state.reportSessionExpired();
+        return;
+      }
+      _diagnostic += '\n按时刻历史帧失败：$e';
     }
-
     if (mounted) {
       setState(() {
         _phase = _Phase.failed;
-        _error = '该 NAS 版本未提供可用的 App 内回放接口';
+        _error = '无法回放该时刻的真实录像';
       });
     }
+  }
+
+  Future<void> _seekBy(AppState state, int seconds) async {
+    final c = _controller;
+    if (_phase == _Phase.video && c != null && c.value.isInitialized) {
+      final cur = c.value.position + Duration(seconds: seconds);
+      final dur = c.value.duration;
+      final target =
+          cur < Duration.zero ? Duration.zero : (cur > dur ? dur : cur);
+      await c.seekTo(target);
+      _position.value = target;
+      return;
+    }
+    // 历史帧路径：切到相邻时刻重新取真实历史帧。
+    final at = widget.seekTo.add(Duration(seconds: seconds));
+    setState(() {
+      _phase = _Phase.loading;
+      _frame.value = null;
+    });
+    await _loadHistoryFrame(state, at);
+  }
+
+  Future<void> _setSpeed(double v) async {
+    _speed = v;
+    await _controller?.setPlaybackSpeed(v);
   }
 
   Future<void> _togglePlay() async {
@@ -265,8 +251,38 @@ class _InlinePlaybackState extends State<InlinePlayback> {
     } else {
       await c.play();
     }
-    if (mounted) setState(() => _playing = c.value.isPlaying);
+    _playingValue.value = c.value.isPlaying;
   }
+
+  void _openFullscreen(AppState state) {
+    FullscreenStage.show(
+      context,
+      title: '回放 · ${widget.camera.name} · ${state.timeFull(widget.seekTo)}',
+      controls: FullscreenControls(
+        seekBy: (int s) => _seekBy(state, s),
+        setSpeed: (double v) => _setSpeed(v),
+        togglePlay: () => _togglePlay(),
+        currentSpeed: () => _speed,
+        position: _position,
+        duration: _controller?.value.duration,
+        playing: _playingValue,
+      ),
+      video: _fullscreenVideo(),
+    );
+  }
+
+  Widget _fullscreenVideo() => ValueListenableBuilder<Uint8List?>(
+        valueListenable: _frame,
+        builder: (BuildContext context, Uint8List? frame, Widget? _) {
+          final c = _controller;
+          if (_phase == _Phase.video && c != null) return VideoPlayer(c);
+          if (frame != null) {
+            return Image.memory(frame,
+                fit: BoxFit.contain, gaplessPlayback: true);
+          }
+          return const SizedBox.shrink();
+        },
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -279,7 +295,7 @@ class _InlinePlaybackState extends State<InlinePlayback> {
           fit: StackFit.expand,
           children: <Widget>[
             _phaseContent(),
-            // 顶部：返回实时 + 完整回放入口。
+            // 顶部：返回实时 + 全屏 + 完整回放入口。
             Positioned(
               top: 8,
               left: 8,
@@ -293,6 +309,9 @@ class _InlinePlaybackState extends State<InlinePlayback> {
                   ),
                   const Spacer(),
                   _tag('回放 · ${state.timeLabel(widget.seekTo)}', AppColors.red),
+                  const SizedBox(width: 6),
+                  _iconPill(
+                      Icons.fullscreen, '全屏', () => _openFullscreen(state)),
                   if (widget.onOpenFull != null) ...<Widget>[
                     const SizedBox(width: 6),
                     _pill(
@@ -314,10 +333,17 @@ class _InlinePlaybackState extends State<InlinePlayback> {
                   if (_phase == _Phase.video)
                     GestureDetector(
                       onTap: _togglePlay,
-                      child: Icon(
-                          _playing ? Icons.pause_circle : Icons.play_circle,
-                          size: 26,
-                          color: Colors.white),
+                      child: ValueListenableBuilder<bool>(
+                        valueListenable: _playingValue,
+                        builder:
+                            (BuildContext context, bool playing, Widget? _) =>
+                                Icon(
+                                    playing
+                                        ? Icons.pause_circle
+                                        : Icons.play_circle,
+                                    size: 26,
+                                    color: Colors.white),
+                      ),
                     ),
                   const SizedBox(width: 8),
                   Expanded(child: _timeLabel(state)),
@@ -339,11 +365,8 @@ class _InlinePlaybackState extends State<InlinePlayback> {
       case _Phase.video:
         final c = _controller;
         return c != null ? VideoPlayer(c) : _busy('正在准备播放器…');
-      case _Phase.streamPending:
-      case _Phase.streamLive:
-        return _frames.value != null
-            ? _MjpegStage(notifier: _frames)
-            : _busy('正在接收回放画面…');
+      case _Phase.frame:
+        return _FrameStage(notifier: _frame);
       case _Phase.failed:
         return _errorView();
     }
@@ -354,8 +377,9 @@ class _InlinePlaybackState extends State<InlinePlayback> {
         builder: (BuildContext context, Duration pos, Widget? _) {
           final label = _phase == _Phase.video
               ? state.timeFull(widget.recording.startTime.add(pos))
-              : '${state.timeFull(widget.seekTo)} 起 · '
-                  '${widget.recording.playbackDurationSeconds}s';
+              : (_frameTimeLabel.isNotEmpty
+                  ? _frameTimeLabel
+                  : state.timeFull(widget.seekTo));
           return Text('录像 $label',
               style: const TextStyle(fontSize: 10, color: Colors.white));
         },
@@ -441,11 +465,25 @@ class _InlinePlaybackState extends State<InlinePlayback> {
           ),
         ),
       );
+
+  Widget _iconPill(IconData icon, String tooltip, VoidCallback onTap) =>
+      Tooltip(
+        message: tooltip,
+        child: GestureDetector(
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+                color: Colors.black54, borderRadius: BorderRadius.circular(6)),
+            child: Icon(icon, size: 14, color: Colors.white),
+          ),
+        ),
+      );
 }
 
-/// MJPEG 回放画面：逐帧局部重绘，gaplessPlayback 保证换帧不清空（不闪烁）。
-class _MjpegStage extends StatelessWidget {
-  const _MjpegStage({required this.notifier});
+/// 历史帧画面：逐帧局部重绘，gaplessPlayback 保证换帧不清空（不闪烁）。
+class _FrameStage extends StatelessWidget {
+  const _FrameStage({required this.notifier});
 
   final ValueNotifier<Uint8List?> notifier;
 
@@ -463,7 +501,7 @@ class _MjpegStage extends StatelessWidget {
               if (frame == null) return const SizedBox.shrink();
               return Image.memory(
                 frame,
-                fit: BoxFit.cover,
+                fit: BoxFit.contain,
                 gaplessPlayback: true,
                 cacheWidth: cacheWidth,
                 filterQuality: FilterQuality.low,

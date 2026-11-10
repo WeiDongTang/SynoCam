@@ -10,6 +10,7 @@ import '../../core/theme/app_icons.dart';
 import '../../data/models/camera.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
+import '../../widgets/fullscreen_stage.dart';
 import '../../widgets/live_clock.dart';
 import '../../widgets/live_snapshot.dart';
 import 'single_view_page.dart';
@@ -229,10 +230,42 @@ class LiveTile extends StatelessWidget {
                 ),
               ),
             ),
-            if (camera.isOnline)
-              Positioned(top: 9, left: 10, child: _liveBadge()),
-            if (camera.quality.isNotEmpty)
-              Positioned(top: 9, right: 10, child: _chip(camera.quality)),
+            Positioned(
+              top: 9,
+              left: 10,
+              right: 10,
+              child: Row(
+                children: <Widget>[
+                  if (camera.isOnline) _liveBadge(),
+                  const Spacer(),
+                  if (camera.quality.isNotEmpty) _chip(camera.quality),
+                  if (camera.quality.isNotEmpty) const SizedBox(width: 6),
+                  // 全屏：实时画面可放大观看，但不支持快进快退（全屏页会
+                  // 明确提示），不做假装有反应的手势。
+                  GestureDetector(
+                    onTap: () => FullscreenStage.show(
+                      context,
+                      title: '实时 · ${camera.name}',
+                      live: true,
+                      video: LiveSnapshot(
+                        camera: camera,
+                        fit: BoxFit.contain,
+                        allowStream: allowStream,
+                        maxFps: maxFps,
+                      ),
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                          color: Colors.black38,
+                          borderRadius: BorderRadius.circular(5)),
+                      child: const Icon(Icons.fullscreen,
+                          size: 15, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             Positioned(
               left: 11,
               right: 11,

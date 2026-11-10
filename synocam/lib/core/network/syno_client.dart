@@ -620,18 +620,17 @@ class SynoClient {
         .substring(0, text.length > 60 ? 60 : text.length);
   }
 
-  // ── MJPEG 直播 / 回放流 ──────────────────────────────────────────────
-
-  /// 优先返回 NAS 给出的原始流路径；否则按官方格式拼装。
-  String liveStreamUrl({
-    required Camera camera,
-    int? startTime,
-    int? endTime,
-  }) {
+  // ── MJPEG 实时流（仅实时预览，绝不用于录像回放）────────────────────
+  //
+  // 重要实证：SS 的 VideoStreaming/Stream(format=mjpeg) 是「实时流」接口，
+  // 不接受 startTime/endTime 做历史回放。旧实现给它拼上 startTime/endTime
+  // 当「回放流」用，NAS 会直接忽略这些参数返回实时画面——这正是用户反复
+  // 反馈「回放选中的时间，却依旧播放实时画面」的根因。因此这里彻底移除
+  // 时间参数，从协议层杜绝把实时流误当回放；历史回放改走
+  // downloadRecording（真实录像文件）与 recordingFrameAt（按时刻历史帧）。
+  String liveStreamUrl({required Camera camera}) {
     final s = _requireSession();
-    if (startTime == null &&
-        camera.livePath != null &&
-        camera.livePath!.isNotEmpty) {
+    if (camera.livePath != null && camera.livePath!.isNotEmpty) {
       return absolutizeStreamUrl(camera.livePath!);
     }
     final api = _apiInfo.containsKey(SynoApi.videoStream)
@@ -652,8 +651,6 @@ class SynoClient {
             ? null
             : camera.stmKey,
         '_sid': s.sid,
-        'startTime': startTime == null ? null : '$startTime',
-        'endTime': endTime == null ? null : '$endTime',
       },
     );
   }
@@ -667,30 +664,43 @@ class SynoClient {
 
   /// 下载真实录像片段。SS 各版本的 Download 参数不一致，做多重回退并
   /// 校验响应确实是媒体文件（而不是 {"error":{"code":400}} 这样的 JSON）。
-  Future<RecordingFile> downloadRecording(Recording r) async {
-    // 与回放页的 MJPEG 回放流使用同一段真实跨度（Recording.playbackEndTime），
-    // 避免下载取 60 秒而回放流只取 1 秒导致画面内容与标注时间不一致。
-    final from = r.startTime.millisecondsSinceEpoch ~/ 1000;
-    final to = r.playbackEndTime.millisecondsSinceEpoch ~/ 1000;
+  ///
+  /// [at] 是用户在时间轴上选中的绝对时刻。提供时优先按
+  /// 「cameraId + startTime(选中时刻) + stopTime」请求，让 NAS 尽量直接
+  /// 返回「从选中时刻开始」的录像（播放器从头播即为选中时刻），并以
+  /// RecordingFile.startsAt 告知回放页：无需再做 seek 偏移。
+  Future<RecordingFile> downloadRecording(Recording r, {DateTime? at}) async {
+    final win = recordingWindowFor(r, at ?? r.startTime);
+    // 选中时刻优先的时间段配方；所有配方都用同一份 RecordingWindow，
+    // 保证「下载 / 历史帧 / 起播偏移」三条链路时间完全一致。
     final recipes = <Map<String, String>>[
+      <String, String>{
+        'cameraId': '${r.cameraId}',
+        'startTime': '${win.from}',
+        'stopTime': '${win.to}',
+      },
       <String, String>{
         'id': r.id,
         'cameraId': '${r.cameraId}',
-        'startTime': '$from',
-        'stopTime': '$to',
+        'startTime': '${win.from}',
+        'stopTime': '${win.to}',
       },
       <String, String>{'idList': r.id},
       <String, String>{
         'recordingId': r.id,
         'cameraId': '${r.cameraId}',
-        'startTime': '$from',
-        'endTime': '$to',
+        'startTime': '${win.from}',
+        'endTime': '${win.to}',
       },
       <String, String>{'id': r.id},
     ];
     final notes = <String>[];
+    var byTimeRange = true;
     for (final params in recipes) {
       final url = _recordingUrl(params);
+      final isTimeRange = params.containsKey('startTime') &&
+          !params.containsKey('id') &&
+          !params.containsKey('recordingId');
       try {
         final resp = await _dio.get<List<int>>(
           url,
@@ -705,13 +715,19 @@ class SynoClient {
             bytes != null &&
             !MediaBytes.looksLikeJsonError(bytes)) {
           _mediaDiagnostic = '录像下载成功：${params.keys.join(',')}'
-              '（${bytes.length} 字节）';
+              '（${bytes.length} 字节，起点 ${win.from}）';
+          // 只有「按时间段」配方成功时可认定内容从选中时刻开始；
+          // 按事件 id 下载的是整段录像，仍需回放页按 win.seekSeconds 偏移。
+          if (!isTimeRange) byTimeRange = false;
           return RecordingFile(
             bytes: bytes,
             extension: MediaBytes.extensionFor(bytes),
             source: params.keys.join(','),
             contentType: resp.headers.value('content-type') ??
                 'application/octet-stream',
+            startsAt: byTimeRange
+                ? DateTime.fromMillisecondsSinceEpoch(win.from * 1000)
+                : r.startTime,
           );
         }
         final sessionError = _classifyBytes(status, bytes);
@@ -723,10 +739,114 @@ class SynoClient {
       } on DioException catch (e) {
         notes.add('HTTP ${e.response?.statusCode ?? '?'} ${e.type.name}');
       }
+      byTimeRange = false; // 后续配方都按事件 id
     }
     _mediaDiagnostic = '录像下载全部失败 → ${notes.join(' | ')}';
     throw SynoException(
         SynoErrorCode.unknown, '录像片段获取失败：${notes.take(2).join('；')}');
+  }
+
+  /// 按「选中的绝对时刻」取 NAS 上真实的历史录像帧（JPEG/PNG）。
+  ///
+  /// 用途：录像文件下载 / 播放器初始化失败时，至少让用户拖动到某时刻能
+  /// 看到「那一刻的真实历史画面」，而不是被实时流冒充。绝不回退到不带
+  /// 时间参数的实时快照 / VideoStreaming 实时流。
+  ///
+  /// SS 各版本把「时间轴拖动预览帧」挂在不同 API/method 上，故做多重
+  /// 配方回退，并严格校验返回确实是图片字节（不是 JSON 错误、不是 HTML、
+  /// 不是实时流）。全部失败时抛出携带真实诊断的异常，由 UI 显示空态。
+  Future<List<int>> recordingFrameAt(int cameraId, DateTime at) async {
+    final t = at.millisecondsSinceEpoch ~/ 1000;
+    final recipes = <Map<String, String>>[
+      // Recording/GetSnapshot：SS 客户端时间轴拖动预览帧的常见实现。
+      <String, String>{
+        'api': SynoApi.recording,
+        'method': 'GetSnapshot',
+        'version': '${_versionFor(SynoApi.recording)}',
+        'cameraId': '$cameraId',
+        'startTime': '$t',
+      },
+      <String, String>{
+        'api': SynoApi.recording,
+        'method': 'GetSnapshot',
+        'version': '1',
+        'cameraId': '$cameraId',
+        'startTime': '$t',
+      },
+      // 部分版本用 time / timestamp 参数名。
+      <String, String>{
+        'api': SynoApi.recording,
+        'method': 'GetSnapshot',
+        'version': '1',
+        'cameraId': '$cameraId',
+        'time': '$t',
+      },
+      // Event/GetSnapshot 带时间。
+      <String, String>{
+        'api': SynoApi.event,
+        'method': 'GetSnapshot',
+        'version': '1',
+        'cameraId': '$cameraId',
+        'startTime': '$t',
+      },
+      // Camera/GetSnapshot 带 startTime（少数版本支持回放帧）。
+      <String, String>{
+        'api': SynoApi.camera,
+        'method': SynoMethod.getSnapshot,
+        'version': '${_versionFor(SynoApi.camera)}',
+        'cameraId': '$cameraId',
+        'camStm': '1',
+        'startTime': '$t',
+      },
+    ];
+    final notes = <String>[];
+    for (final base in recipes) {
+      final query = <String, String?>{
+        '_sid': _session!.sid,
+        ...base,
+      };
+      final url = buildSynoUrl(
+        host: _requireSession().host,
+        cgi: _cgiFor(base['api']!),
+        https: _session!.https,
+        port: _session!.port,
+        query: query,
+      );
+      try {
+        final resp = await _dio.get<List<int>>(
+          url,
+          options: Options(
+            responseType: ResponseType.bytes,
+            headers: <String, dynamic>{
+              'Accept': 'image/jpeg,image/png,image/*,*/*',
+            },
+            receiveTimeout: const Duration(seconds: 20),
+          ),
+        );
+        final bytes = resp.data;
+        final status = resp.statusCode ?? 0;
+        if (status == 200 && bytes != null && MediaBytes.isImage(bytes)) {
+          _mediaDiagnostic = '历史帧成功：${base['api']}/${base['method']}'
+              '（${bytes.length} 字节，时刻 $t）';
+          return bytes;
+        }
+        final sessionError = _classifyBytes(status, bytes);
+        if (sessionError != null) {
+          _mediaDiagnostic = '历史帧失败：登录会话已过期（HTTP $status）';
+          throw sessionError;
+        }
+        notes.add('${base['api']}/${base['method']}: HTTP $status '
+            '${_bodyHint(bytes)}');
+      } on DioException catch (e) {
+        notes.add('${base['api']}/${base['method']}: '
+            'HTTP ${e.response?.statusCode ?? '?'} ${e.type.name}');
+      }
+    }
+    _mediaDiagnostic = '按时刻历史帧全部失败 → ${notes.join(' | ')}';
+    throw SynoException(
+        SynoErrorCode.unknown,
+        '该 NAS 版本未提供「按时刻取历史帧」接口（已尝试 ${recipes.length} 种）：'
+        '${notes.take(2).join('；')}');
   }
 
   String _recordingUrl(Map<String, String> params) => buildSynoUrl(

@@ -13,6 +13,7 @@ import '../../data/models/camera.dart';
 import '../../data/models/media.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
+import '../../widgets/fullscreen_stage.dart';
 import '../../widgets/live_clock.dart';
 import '../../widgets/live_snapshot.dart';
 import '../cameras/camera_edit_page.dart';
@@ -173,10 +174,31 @@ class _SingleViewPageState extends State<SingleViewPage> {
               left: 12,
               right: 12,
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: <Widget>[
                   _osdChip('● LIVE', AppColors.red),
-                  _osdChip(cam.codec.isEmpty ? '实时预览' : cam.codec, null),
+                  const SizedBox(width: 6),
+                  if (cam.codec.isNotEmpty) _osdChip(cam.codec, null),
+                  const Spacer(),
+                  // 全屏实时观看（实时画面不支持快进快退，全屏页会明确提示）。
+                  GestureDetector(
+                    onTap: () => FullscreenStage.show(
+                      context,
+                      title: '实时 · ${cam.name}',
+                      live: true,
+                      video: LiveSnapshot(
+                        camera: cam,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.all(5),
+                      decoration: BoxDecoration(
+                          color: Colors.black38,
+                          borderRadius: BorderRadius.circular(6)),
+                      child: const Icon(Icons.fullscreen,
+                          size: 18, color: Colors.white),
+                    ),
+                  ),
                 ],
               ),
             ),

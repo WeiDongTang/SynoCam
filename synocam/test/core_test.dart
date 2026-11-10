@@ -549,6 +549,39 @@ void main() {
               clip, day.add(const Duration(hours: 11))),
           600);
     });
+
+    test('按选中时刻回放窗口：请求起点即选中时刻，整段下载时给出 seek 偏移', () {
+      final at = day.add(const Duration(hours: 10, minutes: 3, seconds: 20));
+      final w = recordingWindowFor(clip, at);
+      expect(w.startsAtTarget, isTrue);
+      expect(w.from, at.millisecondsSinceEpoch ~/ 1000);
+      expect(w.to, clip.playbackEndTime.millisecondsSinceEpoch ~/ 1000);
+      expect(w.seekSeconds, 200);
+
+      final out = recordingWindowFor(clip, day.add(const Duration(hours: 12)));
+      expect(out.startsAtTarget, isFalse);
+      expect(out.seekSeconds, 0);
+      expect(out.to, greaterThan(out.from));
+
+      final noStop = Recording(
+        id: 'c4',
+        cameraId: 1,
+        cameraName: '缺结束时间',
+        startTime: day.add(const Duration(hours: 10)),
+        durationSeconds: 0,
+      );
+      final w2 = recordingWindowFor(
+          noStop, day.add(const Duration(hours: 10, seconds: 30)));
+      expect(w2.to - w2.from, greaterThanOrEqualTo(60));
+
+      final f = RecordingFile(
+        bytes: const <int>[1],
+        extension: '.mp4',
+        source: 'cameraId,startTime,stopTime',
+        startsAt: at,
+      );
+      expect(f.startsAt, at);
+    });
   });
 
   group('会话失效闭环（HTTP 465 / 登录页 HTML）', () {

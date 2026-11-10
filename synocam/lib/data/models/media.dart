@@ -116,12 +116,60 @@ class RecordingFile {
     required this.extension,
     required this.source,
     this.contentType = '',
+    this.startsAt,
   });
 
   final List<int> bytes;
   final String extension;
   final String source;
   final String contentType;
+
+  /// 该文件内容对应的起始时刻（按选中时刻下载时为选中时刻，否则为片段起点）。
+  /// 回放页据此决定起播偏移，避免「回放的不是选中时间」。
+  final DateTime? startsAt;
+}
+
+/// 按「用户选中的时刻」构造录像下载 / 回放的请求窗口。
+/// 纯 Dart，供 SynoClient、回放页与核心自检共用，避免三条链路各算一套
+/// 导致「下载取 60 秒、回放流只取 1 秒、seek 又按另一套」的时间错乱。
+class RecordingWindow {
+  const RecordingWindow({
+    required this.from,
+    required this.to,
+    required this.seekSeconds,
+    required this.startsAtTarget,
+  });
+
+  /// 请求起始的 Unix 秒（选中时刻落在片段内时即为选中时刻）。
+  final int from;
+  final int to;
+
+  /// 当 NAS 依旧按事件 id 返回「从片段起点开始的整段录像」时，
+  /// 播放器需要额外 seek 的秒数；若 NAS 按时间段返回则播放器从头播即可。
+  final int seekSeconds;
+
+  /// 选中时刻是否确实落在该片段的回放跨度内。
+  final bool startsAtTarget;
+}
+
+RecordingWindow recordingWindowFor(Recording r, DateTime at) {
+  final start = r.startTime.millisecondsSinceEpoch ~/ 1000;
+  final end = r.playbackEndTime.millisecondsSinceEpoch ~/ 1000;
+  final t = at.millisecondsSinceEpoch ~/ 1000;
+  final inside = !at.isBefore(r.startTime) && !at.isAfter(r.playbackEndTime);
+  final from = inside ? t : start;
+  var to = inside ? end : (end > start ? end : start + 60);
+  // 选中时刻靠近片段末尾、或片段缺 stopTime（回放跨度只有 60 秒）时，
+  // 从选中时刻到终点可能只剩几秒，下载/回放会得到几乎空的片段。
+  // 统一保证请求窗口至少 60 秒，避免「拖到某时刻却只有 1 秒画面」。
+  if (to - from < 60) to = from + 60;
+  final seek = inside ? (t - start) : 0;
+  return RecordingWindow(
+    from: from,
+    to: to,
+    seekSeconds: seek < 0 ? 0 : seek,
+    startsAtTarget: inside,
+  );
 }
 
 /// 媒体字节识别：按文件头判断真实图片/录像，防止把 DSM 的

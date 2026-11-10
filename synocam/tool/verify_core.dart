@@ -368,6 +368,42 @@ Future<void> main() async {
           rf.source.isNotEmpty &&
           rf.contentType == 'video/mp4',
       '真实录像文件模型携带来源与格式');
+  check(rf.startsAt == null, '未标注起点时录像文件起点为空（回放页按片段 seek）');
+
+  print('── 按选中时刻回放窗口（修复「回放播放实时画面 / 不是选中时刻」）──');
+  final winClip = Recording(
+      id: 'e1',
+      cameraId: 2,
+      cameraName: 'c2',
+      startTime: DateTime(2026, 11, 10, 10, 0),
+      durationSeconds: 600);
+  final atIn = DateTime(2026, 11, 10, 10, 3, 20);
+  final wIn = recordingWindowFor(winClip, atIn);
+  check(wIn.startsAtTarget, '选中时刻落在片段内时按该时刻请求');
+  check(
+      wIn.from == atIn.millisecondsSinceEpoch ~/ 1000 &&
+          wIn.to == winClip.playbackEndTime.millisecondsSinceEpoch ~/ 1000,
+      '请求窗口起点=选中时刻、终点=片段回放终点');
+  check(wIn.seekSeconds == 200, '按 id 下载整段时的偏移=选中时刻-片段起点');
+  final atOut = DateTime(2026, 11, 10, 12, 0);
+  final wOut = recordingWindowFor(winClip, atOut);
+  check(!wOut.startsAtTarget && wOut.seekSeconds == 0, '选中时刻在片段外时回退到片段起点、不做偏移');
+  check(wOut.to > wOut.from, '请求窗口至少有正跨度，不出现 1 秒空窗');
+  final winNoStop = Recording(
+      id: 'e2',
+      cameraId: 2,
+      cameraName: 'c2',
+      startTime: DateTime(2026, 11, 10, 10, 0),
+      durationSeconds: 0);
+  final wNoStop =
+      recordingWindowFor(winNoStop, DateTime(2026, 11, 10, 10, 0, 30));
+  check(wNoStop.to - wNoStop.from >= 60, '缺 stopTime 的片段窗口至少 60 秒（不会只请求 1 秒）');
+  final rfAt = RecordingFile(
+      bytes: <int>[1],
+      extension: '.mp4',
+      source: 'cameraId,startTime,stopTime',
+      startsAt: DateTime(2026, 11, 10, 10, 3, 20));
+  check(rfAt.startsAt != null, '按时间段下载成功时录像文件标注真实起点=选中时刻');
 
   print('── MJPEG 流解析（App 内连续画面 / 回放画面）──');
   check(indexOfBytes(<int>[1, 2, 3, 4, 5], <int>[3, 4]) == 2, '字节子序列定位');

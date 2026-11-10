@@ -50,8 +50,12 @@ class CameraRepository {
   String snapshotUrl(int cameraId, {int? nonce}) =>
       _client.snapshotUrl(cameraId, nonce: nonce);
 
-  String liveStreamUrl(Camera camera, {int? startTime, int? endTime}) => _client
-      .liveStreamUrl(camera: camera, startTime: startTime, endTime: endTime);
+  /// 仅实时预览用；VideoStreaming/Stream 不支持历史回放时间参数。
+  String liveStreamUrl(Camera camera) => _client.liveStreamUrl(camera: camera);
+
+  /// 按选中时刻取 NAS 真实历史帧（回放兜底，非实时画面）。
+  Future<List<int>> recordingFrameAt(int cameraId, DateTime at) =>
+      _client.recordingFrameAt(cameraId, at);
 
   String rtspUrl(Camera camera) => _client.rtspUrl(camera.id);
 

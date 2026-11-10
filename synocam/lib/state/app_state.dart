@@ -460,8 +460,13 @@ class AppState extends ChangeNotifier {
   Future<List<int>> snapshotBytes(Camera c) => _cameras.snapshotBytes(c.id);
   Future<List<int>> takeSnapshot(Camera c) => _cameras.snapshotBytes(c.id);
 
-  String liveStreamUrl(Camera c, {int? startTime, int? endTime}) =>
-      _cameras.liveStreamUrl(c, startTime: startTime, endTime: endTime);
+  /// 仅实时预览用；历史回放绝不经过实时流接口。
+  String liveStreamUrl(Camera c) => _cameras.liveStreamUrl(c);
+
+  /// 按选中时刻取 NAS 真实历史帧（回放兜底，绝不返回实时画面）。
+  Future<List<int>> recordingFrameAt(Camera c, DateTime at) =>
+      _cameras.recordingFrameAt(c.id, at);
+
   String rtspUrl(Camera c) => _cameras.rtspUrl(c);
   String webUiUrl() => _cameras.webUiUrl();
 
@@ -471,8 +476,9 @@ class AppState extends ChangeNotifier {
   Future<String> testSnapshot(Camera c) => _cameras.testSnapshot(c.id);
 
   /// 下载真实录像片段，供 App 内播放器读取（默认不再跳浏览器）。
-  Future<RecordingFile> downloadRecording(Recording r) =>
-      _media.downloadRecording(r);
+  /// [at] 为时间轴上选中的绝对时刻。
+  Future<RecordingFile> downloadRecording(Recording r, {DateTime? at}) =>
+      _media.downloadRecording(r, at: at);
 
   // ── PTZ 门面 ──
   Future<void> ptzMove(int cameraId, String direction) =>
