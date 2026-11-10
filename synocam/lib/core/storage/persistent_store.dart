@@ -88,6 +88,13 @@ class PersistentSecureStore implements SecureStore {
     }
   }
 
+  /// 会话失效时只删除保存的 SID：保留设备令牌（did 免 2FA）与上次连接信息，
+  /// 避免冷启动反复读回已失效的僵尸会话。
+  Future<void> clearSessionOnly() async {
+    await init();
+    await _p.remove(_kSession);
+  }
+
   @override
   Future<void> clear() async {
     await init();

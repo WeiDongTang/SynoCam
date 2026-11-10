@@ -67,6 +67,8 @@ class AppState extends ChangeNotifier {
     _mediaState = LoadState.idle;
     _client.clearSession();
     unawaited(_prefs.setSessionExpired(true));
+    // 删掉持久化的废弃 SID；保留 did 与上次连接信息。
+    unawaited(_store.clearSessionOnly());
     // 避免在 build 期间同步触发 setState / 页面切换断言。
     unawaited(Future.microtask(notifyListeners));
   }
@@ -145,7 +147,9 @@ class AppState extends ChangeNotifier {
     applyCertificatePolicy(_prefs.allowUntrustedCert);
     _readEventIds = _prefs.readEventIds;
     _sessionExpired = _prefs.sessionExpired;
-    _session = await _auth.restore();
+    // 上次已判定会话失效：直接回登录页（带预填与过期提示），不再恢复僵尸
+    // SID、也不依赖 NAS 当前是否可达，避免 NAS 离线时卡在报错页面。
+    _session = _sessionExpired ? null : await _auth.restore();
     if (_session != null) {
       // 冷启动探针：恢复的 SID 是否仍被 NAS 接受。外网 / DDNS 场景下 DSM
       // 常以 HTTP 465 + 登录页 HTML 拒绝过期会话，必须在这里就识别出来，
