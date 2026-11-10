@@ -41,6 +41,30 @@ class _LoginPageState extends State<LoginPage> {
   String? _error;
   String? _hint; // 2FA 引导（蓝色提示，区别于红色错误）
   bool _otpRejected = false; // 上一次验证码被拒（404）
+  bool _expired = false; // 会话过期后回到登录页
+
+  @override
+  void initState() {
+    super.initState();
+    // 会话失效后回到登录页：预填上次的连接参数（不含密码），并显示明确的
+    // 过期提示；用户只需重输密码（及验证码），不必重敲 DDNS / 端口 / 账号。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final state = context.read<AppState>();
+      final c = state.lastConnection;
+      setState(() {
+        _expired = state.sessionExpired;
+        if (c != null) {
+          _host.text = c.host;
+          _account.text = c.account;
+          _https = c.https;
+          _twoFactor = c.twoFactor;
+          _trustDevice = c.trustDevice;
+          _port.text = c.port > 0 ? '${c.port}' : '';
+        }
+      });
+    });
+  }
 
   @override
   void dispose() {
@@ -119,6 +143,7 @@ class _LoginPageState extends State<LoginPage> {
                 children: <Widget>[
                   _brand(),
                   const SizedBox(height: 30),
+                  if (_expired) _expiredBanner(),
                   _field(
                     controller: _host,
                     label: 'QuickConnect ID / IP / DDNS',
@@ -359,6 +384,42 @@ class _LoginPageState extends State<LoginPage> {
             child: Text(label, style: const TextStyle(fontSize: 13)),
           ),
         ],
+      );
+
+  Widget _expiredBanner() => Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.blueSoft,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.blue.withOpacity(.25)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const AppIcon(AppIcons.shield, size: 18, color: AppColors.blue),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  const Text('登录已过期，请重新输入密码',
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.blue)),
+                  const SizedBox(height: 3),
+                  Text(
+                    'NAS 拒绝了之前的会话（外网 / DDNS 长时间未操作或手机网络切换时常见）。'
+                    '连接信息已为你保留'
+                    '${_twoFactor ? '；若账号开启两步验证，请输入新的验证码' : ''}。',
+                    style: TextStyle(fontSize: 11, color: AppColors.sub),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       );
 
   Widget _hintBanner(String msg) => Container(

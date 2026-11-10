@@ -111,6 +111,8 @@ class AppPreferences {
   static const String _kPip = 'pref.pip';
   static const String _kSmartTimeline = 'pref.smart_timeline';
   static const String _kStreamMode = 'pref.stream_mode';
+  static const String _kLastConnection = 'auth.last_connection';
+  static const String _kSessionExpired = 'auth.session_expired';
 
   SharedPreferences get _p => _store._p;
 
@@ -165,5 +167,32 @@ class AppPreferences {
   Future<void> setStreamMode(bool v) async {
     await _store.init();
     await _p.setBool(_kStreamMode, v);
+  }
+
+  /// 上次连接的非敏感参数。注意：clear() 不会删除它，用户主动退出后再次
+  /// 打开 App 仍会自动预填地址 / 端口 / 账号。
+  LastConnection? get lastConnection {
+    final raw = _p.getString(_kLastConnection);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final c = LastConnection.fromJson(
+          Map<String, dynamic>.from(jsonDecode(raw) as Map));
+      return c.isValid ? c : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> saveLastConnection(LastConnection c) async {
+    await _store.init();
+    await _p.setString(_kLastConnection, jsonEncode(c.toJson()));
+  }
+
+  /// 会话失效标记：登录页据此显示「登录已过期，请重新输入密码」提示。
+  bool get sessionExpired => _p.getBool(_kSessionExpired) ?? false;
+
+  Future<void> setSessionExpired(bool v) async {
+    await _store.init();
+    await _p.setBool(_kSessionExpired, v);
   }
 }

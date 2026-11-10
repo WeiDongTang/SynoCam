@@ -40,8 +40,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
 
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _run(Future<void> Function() op, String label) async {
@@ -83,7 +82,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
         ),
         actions: <Widget>[
           IconButton(
-            icon: const AppIcon(AppIcons.refresh, size: 20, color: AppColors.blue),
+            icon: const AppIcon(AppIcons.refresh,
+                size: 20, color: AppColors.blue),
             onPressed: () => state.refreshAll(),
           ),
           IconButton(
@@ -144,8 +144,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: <Widget>[
                     _osdChip('● LIVE', AppColors.red),
-                    _osdChip(
-                        cam.codec.isEmpty ? '实时预览' : cam.codec, null),
+                    _osdChip(cam.codec.isEmpty ? '实时预览' : cam.codec, null),
                   ],
                 ),
               ),
@@ -184,8 +183,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
       );
 
   Widget _streamActions(BuildContext context, AppState state, Camera cam) {
-    final clips =
-        state.recordings.where((r) => r.cameraId == cam.id).toList();
+    final clips = state.recordings.where((r) => r.cameraId == cam.id).toList();
     return Row(
       children: <Widget>[
         Expanded(
@@ -230,9 +228,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
       children: items
           .map((a) => _ActionButton(
                 action: a,
-                enabled: !_busy &&
-                    a.label != '对讲' &&
-                    a.label != '音频',
+                enabled: !_busy && a.label != '对讲' && a.label != '音频',
                 onTap: () => _onAction(context, state, cam, a.label),
               ))
           .toList(),
@@ -336,10 +332,14 @@ class _SingleViewPageState extends State<SingleViewPage> {
         ),
         child: Stack(
           children: <Widget>[
-            _padBtn(Alignment.topCenter, AppIcons.up, () => move('up'), enabled),
-            _padBtn(Alignment.bottomCenter, AppIcons.down, () => move('down'), enabled),
-            _padBtn(Alignment.centerLeft, AppIcons.left, () => move('left'), enabled),
-            _padBtn(Alignment.centerRight, AppIcons.right, () => move('right'), enabled),
+            _padBtn(
+                Alignment.topCenter, AppIcons.up, () => move('up'), enabled),
+            _padBtn(Alignment.bottomCenter, AppIcons.down, () => move('down'),
+                enabled),
+            _padBtn(Alignment.centerLeft, AppIcons.left, () => move('left'),
+                enabled),
+            _padBtn(Alignment.centerRight, AppIcons.right, () => move('right'),
+                enabled),
             Center(
               child: IconButton(
                 icon: const AppIcon(AppIcons.target,
@@ -351,8 +351,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
         ),
       );
 
-  Widget _padBtn(Alignment align, IconData icon, VoidCallback onTap,
-          bool enabled) =>
+  Widget _padBtn(
+          Alignment align, IconData icon, VoidCallback onTap, bool enabled) =>
       Align(
         alignment: align,
         child: Padding(
@@ -392,8 +392,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
     final now = DateTime.now();
     final todayStart = DateTime(now.year, now.month, now.day);
     final clips = state.recordings
-        .where(
-            (r) => r.cameraId == cam.id && !r.startTime.isBefore(todayStart))
+        .where((r) => r.cameraId == cam.id && !r.startTime.isBefore(todayStart))
         .toList();
 
     if (!_scrubReady && clips.isNotEmpty) {
@@ -403,7 +402,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
     }
 
     if (state.mediaState == LoadState.error) {
-      return _notice(state.mediaError ?? '录像读取失败',
+      final err = state.mediaError ?? '录像读取失败';
+      return _notice('$err\n${classifyFailure(state.mediaError).advice}',
           onRetry: () => state.refreshMedia());
     }
     if (state.mediaState == LoadState.loading) {
@@ -419,8 +419,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
     }
 
     final t = TimelineMath.timeAt(_scrubFraction, todayStart);
-    final hit = TimelineMath.clipAt(clips, t) ??
-        TimelineMath.nearestClip(clips, t);
+    final hit =
+        TimelineMath.clipAt(clips, t) ?? TimelineMath.nearestClip(clips, t);
 
     return Column(
       children: <Widget>[
@@ -430,8 +430,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
             Text('00:00',
                 style: TextStyle(fontSize: 10, color: AppColors.faint)),
             Text('拖动定位 ${TimelineMath.timeLabel(t)}',
-                style: const TextStyle(
-                    fontSize: 11, fontWeight: FontWeight.w600)),
+                style:
+                    const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
             Text('24:00',
                 style: TextStyle(fontSize: 10, color: AppColors.faint)),
           ],
@@ -455,8 +455,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
     );
   }
 
-  Widget _clipTrack(BuildContext context, Camera cam,
-          List<Recording> clips, DateTime dayStart) =>
+  Widget _clipTrack(BuildContext context, Camera cam, List<Recording> clips,
+          DateTime dayStart) =>
       LayoutBuilder(
         builder: (BuildContext ctx, BoxConstraints constraints) {
           final w = constraints.maxWidth;
@@ -470,8 +470,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
             child: Stack(
               children: clips.map((r) {
                 final left = TimelineMath.fractionOf(r.startTime, dayStart);
-                final width = (r.durationSeconds /
-                        TimelineMath.secondsPerDay)
+                final width = (r.durationSeconds / TimelineMath.secondsPerDay)
                     .clamp(0.004, 1.0)
                     .toDouble();
                 return Positioned(
@@ -483,8 +482,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
                     onTap: () => _openPlayback(context, cam, r),
                     child: Container(
                       decoration: BoxDecoration(
-                        color: (r.eventType == '移动侦测' ||
-                                    r.eventType == '告警输入')
+                        color: (r.eventType == '移动侦测' || r.eventType == '告警输入')
                             ? AppColors.red.withOpacity(.35)
                             : AppColors.green.withOpacity(.3),
                         border: Border(
@@ -509,7 +507,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
         child: ListTile(
           leading: const BadgeIcon(AppIcons.timeline, tone: IconTone.blue),
           title: Text('定位到 ${TimelineMath.timeLabel(t)}',
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              style:
+                  const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
           subtitle: Text(
               hit == null
                   ? '该时刻附近无录像片段'
@@ -529,8 +528,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
         child: ListTile(
           dense: true,
           leading: const AppIcon(AppIcons.play, size: 17),
-          title: Text(r.eventType,
-              style: const TextStyle(fontSize: 12.5)),
+          title: Text(r.eventType, style: const TextStyle(fontSize: 12.5)),
           subtitle: Text(
               '${TimelineMath.timeLabel(r.startTime)} · ${r.durationLabel}'
               '${r.locked ? ' · 已锁定' : ''}',
@@ -540,36 +538,43 @@ class _SingleViewPageState extends State<SingleViewPage> {
         ),
       );
 
-  Widget _notice(String msg, {required VoidCallback onRetry}) => Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.card,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.line),
-        ),
-        child: Column(
-          children: <Widget>[
-            Text(msg,
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12, color: AppColors.sub)),
-            const SizedBox(height: 10),
-            TextButton.icon(
-                onPressed: onRetry,
-                icon: const AppIcon(AppIcons.refresh, size: 15),
-                label: const Text('重新读取')),
-          ],
-        ),
-      );
+  Widget _notice(String msg, {required VoidCallback onRetry}) {
+    final relogin = classifyFailure(msg).needsReLogin;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        children: <Widget>[
+          Text(msg,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: AppColors.sub)),
+          const SizedBox(height: 10),
+          TextButton.icon(
+              onPressed: relogin
+                  ? () => context.read<AppState>().reportSessionExpired()
+                  : onRetry,
+              icon: const AppIcon(AppIcons.refresh, size: 15),
+              label: Text(relogin ? '重新登录' : '重新读取')),
+        ],
+      ),
+    );
+  }
 
   Widget _deviceInfo(Camera cam) => Card(
         child: Column(
           children: <Widget>[
-            _infoRow(AppIcons.cameras, cam.model.isEmpty ? '—' : cam.model, '型号'),
+            _infoRow(
+                AppIcons.cameras, cam.model.isEmpty ? '—' : cam.model, '型号'),
             _infoRow(AppIcons.server, cam.ip.isEmpty ? '—' : cam.ip, 'IP 地址'),
-            _infoRow(AppIcons.info, cam.serial.isEmpty ? '—' : cam.serial, '序列号'),
+            _infoRow(
+                AppIcons.info, cam.serial.isEmpty ? '—' : cam.serial, '序列号'),
             _infoRow(AppIcons.power, cam.isOnline ? '已启用' : '已停用', '状态'),
-            _infoRow(AppIcons.shield,
-                cam.canStream ? '已获取流凭证' : '未返回流凭证', '直播流'),
+            _infoRow(
+                AppIcons.shield, cam.canStream ? '已获取流凭证' : '未返回流凭证', '直播流'),
           ],
         ),
       );

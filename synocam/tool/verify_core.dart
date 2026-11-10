@@ -197,11 +197,11 @@ Future<void> main() async {
       '回放倍速覆盖 0.25x–5x');
 
   print('── 真实 API 链路（清除演示数据后的能力）──');
-  check(SynoMethod.queryEvents == 'Query',
-      'SS 录像事件用 Query（非 List，method 首字母大写）');
+  check(
+      SynoMethod.queryEvents == 'Query', 'SS 录像事件用 Query（非 List，method 首字母大写）');
   check(SynoMethod.queryApiInfo == 'query', 'API Info 用小写 query');
-  check(SynoApi.videoStream ==
-      'SYNO.SurveillanceStation.Stream.VideoStreaming', 'MJPEG 直播流 API 名');
+  check(SynoApi.videoStream == 'SYNO.SurveillanceStation.Stream.VideoStreaming',
+      'MJPEG 直播流 API 名');
   check(SynoEndpoints.cgiFromPath('entry.cgi') == '/webapi/entry.cgi',
       'API Info path 拼接为完整 CGI');
   check(SynoEndpoints.cgiFromPath(null) == SynoEndpoints.entryCgi,
@@ -241,8 +241,7 @@ Future<void> main() async {
         'http://nas:5000/webapi/entry.cgi?api=SYNO.SurveillanceStation.Stream.VideoStreaming&method=Stream&StmKey="XYZ987654321"',
   });
   check(camWithPath.canStream, '从 GetLiveViewPath 完整 URL 提取 StmKey');
-  check(!const Camera(id: 9, name: '无流凭证').canStream,
-      '无凭证时 UI 明确提示而非伪造画面');
+  check(!const Camera(id: 9, name: '无流凭证').canStream, '无凭证时 UI 明确提示而非伪造画面');
 
   final rec = Recording.fromEventJson(<String, dynamic>{
     'id': 500,
@@ -252,13 +251,14 @@ Future<void> main() async {
     'status': 2,
     'mode': 1,
     'videoCodec': 'H264',
-  }, <int, String>{1: '前门'});
+  }, <int, String>{
+    1: '前门'
+  });
   check(rec.durationSeconds == 60 && rec.locked, '真实事件解析时长与锁定状态');
-  check(rec.eventType == '移动侦测' && rec.cameraName == '前门',
-      '录制模式映射为可读类型 + 摄像机名');
+  check(
+      rec.eventType == '移动侦测' && rec.cameraName == '前门', '录制模式映射为可读类型 + 摄像机名');
   check(rec.dateLabel.startsWith('2012'), '录像分组日期来自真实时间戳');
-  check(SurveillanceEvent.fromRecording(rec).type == 'motion',
-      '通知事件由真实录像派生');
+  check(SurveillanceEvent.fromRecording(rec).type == 'motion', '通知事件由真实录像派生');
 
   print('── 流端点会话 Cookie（HTTP 465「画面加载失败」根因）──');
   const ss = SynoSession(
@@ -272,28 +272,20 @@ Future<void> main() async {
       'Cookie 同时带 id=<sid> 与 did=<设备令牌>');
   check(
       const SynoSession(
-              sid: 'S',
-              host: 'nas',
-              account: 'a',
-              https: false,
-              port: 5000)
-          .cookieHeader ==
+                  sid: 'S', host: 'nas', account: 'a', https: false, port: 5000)
+              .cookieHeader ==
           'id=S',
       '无设备令牌时 Cookie 仅带 id');
-  check(
-      SynoSession.fromJson(ss.toJson()).cookieHeader == 'id=SID-9; did=DID-7',
+  check(SynoSession.fromJson(ss.toJson()).cookieHeader == 'id=SID-9; did=DID-7',
       '会话序列化往返后 Cookie 仍可重建');
 
   print('── 媒体字节识别（区分真画面与 DSM 错误 JSON）──');
-  check(MediaBytes.isImage(<int>[0xFF, 0xD8, 0xFF, 0xE0, 0x00]),
-      'JPEG 头识别为真图片');
-  check(MediaBytes.isImage(<int>[0x89, 0x50, 0x4E, 0x47, 0x0D]),
-      'PNG 头识别为真图片');
-  check(!MediaBytes.isImage(<int>[0x7B, 0x22, 0x65, 0x72]),
-      'JSON 开头不会误判为图片');
-  check(!MediaBytes.isImage(<int>[0xFF, 0xD8]), '过短字节不是图片');
   check(
-      MediaBytes.looksLikeJsonError('{"error":{"code":400}}'.codeUnits),
+      MediaBytes.isImage(<int>[0xFF, 0xD8, 0xFF, 0xE0, 0x00]), 'JPEG 头识别为真图片');
+  check(MediaBytes.isImage(<int>[0x89, 0x50, 0x4E, 0x47, 0x0D]), 'PNG 头识别为真图片');
+  check(!MediaBytes.isImage(<int>[0x7B, 0x22, 0x65, 0x72]), 'JSON 开头不会误判为图片');
+  check(!MediaBytes.isImage(<int>[0xFF, 0xD8]), '过短字节不是图片');
+  check(MediaBytes.looksLikeJsonError('{"error":{"code":400}}'.codeUnits),
       'DSM 错误 JSON（HTTP 200）被识别为失败响应');
   check(MediaBytes.looksLikeJsonError(<int>[]), '空响应视为失败');
   check(
@@ -302,8 +294,19 @@ Future<void> main() async {
       'MP4 二进制不被误判为 JSON 错误');
   check(
       MediaBytes.extensionFor(<int>[
-        0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D
-      ]) ==
+            0,
+            0,
+            0,
+            24,
+            0x66,
+            0x74,
+            0x79,
+            0x70,
+            0x69,
+            0x73,
+            0x6F,
+            0x6D
+          ]) ==
           '.mp4',
       'MP4 ftyp 文件头推断 .mp4');
   check(MediaBytes.extensionFor(<int>[0x1A, 0x45, 0xDF, 0xA3]) == '.mkv',
@@ -311,8 +314,7 @@ Future<void> main() async {
   check(MediaBytes.extensionFor(<int>[0x52, 0x49, 0x46, 0x46]) == '.avi',
       'RIFF 文件头推断 .avi');
   check(
-      MediaBytes.extensionFor(
-              <int>[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) ==
+      MediaBytes.extensionFor(<int>[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) ==
           '.mp4',
       '未知格式安全回退 .mp4（video_player 可尝试打开）');
   const rf = RecordingFile(
@@ -328,11 +330,9 @@ Future<void> main() async {
       '真实录像文件模型携带来源与格式');
 
   print('── MJPEG 流解析（App 内连续画面 / 回放画面）──');
-  check(indexOfBytes(<int>[1, 2, 3, 4, 5], <int>[3, 4]) == 2,
-      '字节子序列定位');
+  check(indexOfBytes(<int>[1, 2, 3, 4, 5], <int>[3, 4]) == 2, '字节子序列定位');
   check(indexOfBytes(<int>[1, 2, 3], <int>[9]) == -1, '未找到返回 -1');
-  check(indexOfBytes(<int>[1, 2, 1, 2], <int>[1, 2], 1) == 2,
-      '指定起点后继续查找');
+  check(indexOfBytes(<int>[1, 2, 1, 2], <int>[1, 2], 1) == 2, '指定起点后继续查找');
   check(
       boundaryFrom('multipart/x-mixed-replace; boundary=myBoundary') ==
           'myBoundary',
@@ -345,8 +345,7 @@ Future<void> main() async {
 
   final jpeg = <int>[0xFF, 0xD8, 0xFF, 0x01, 0x02];
   final part = <int>[
-    ...'--B\r\nContent-Type: image/jpeg\r\nContent-Length: 5\r\n\r\n'
-        .codeUnits,
+    ...'--B\r\nContent-Type: image/jpeg\r\nContent-Length: 5\r\n\r\n'.codeUnits,
     ...jpeg,
     ...'\r\n--B\r\nContent-Type: image/jpeg\r\nContent-Length: 5\r\n\r\n'
         .codeUnits,
@@ -357,40 +356,35 @@ Future<void> main() async {
           Stream<List<int>>.fromIterable(<List<int>>[part]), 'B')
       .toList();
   check(frames.length == 2, 'multipart 流按 Content-Length 精确切出 2 帧');
-  check(frames.first.length == 5 && frames.first[0] == 0xFF,
-      '切出的首帧是完整 JPEG 字节');
+  check(
+      frames.first.length == 5 && frames.first[0] == 0xFF, '切出的首帧是完整 JPEG 字节');
   check(frames.last[4] == 0x02, '第二帧字节完整');
 
   final raw = <int>[
     0xFF, 0xD8, 0xFF, 0xAA, 0xFF, 0xD9, // 帧 1
     0xFF, 0xD8, 0xFF, 0xBB, 0xFF, 0xD9, // 帧 2
   ];
-  final rawFrames = await parseRawJpegFrames(
-          Stream<List<int>>.fromIterable(<List<int>>[raw]))
-      .toList();
+  final rawFrames =
+      await parseRawJpegFrames(Stream<List<int>>.fromIterable(<List<int>>[raw]))
+          .toList();
   check(rawFrames.length == 2, '无 multipart 封装时按 SOI/EOI 切出 2 帧');
-  check(rawFrames[0][3] == 0xAA && rawFrames[1][3] == 0xBB,
-      '裸流两帧内容各自独立');
+  check(rawFrames[0][3] == 0xAA && rawFrames[1][3] == 0xBB, '裸流两帧内容各自独立');
 
   print('── 时间轴拖动 / App 内片段回放 ──');
   final day = DateTime(2024, 5, 1);
   check(TimelineMath.secondsPerDay == 86400, '一天 86400 秒');
   check(
-      (TimelineMath.fractionOf(
-                  day.add(const Duration(hours: 6)), day) -
-              0.25)
-          .abs() <
+      (TimelineMath.fractionOf(day.add(const Duration(hours: 6)), day) - 0.25)
+              .abs() <
           1e-9,
       '06:00 映射到 0.25');
   check(TimelineMath.timeAt(0.5, day).hour == 12, '0.5 还原为 12:00');
-  check(
-      TimelineMath.timeLabel(DateTime(2024, 5, 1, 9, 5, 3)) == '09:05:03',
+  check(TimelineMath.timeLabel(DateTime(2024, 5, 1, 9, 5, 3)) == '09:05:03',
       '时间标签补零');
   check(TimelineMath.fractionOf(day.add(const Duration(days: 2)), day) == 1.0,
       '越界上钳到 1');
   check(
-      TimelineMath.fractionOf(
-              day.subtract(const Duration(hours: 5)), day) ==
+      TimelineMath.fractionOf(day.subtract(const Duration(hours: 5)), day) ==
           0.0,
       '越界下钳到 0');
   final clip = Recording(
@@ -404,13 +398,13 @@ Future<void> main() async {
       'endTime = startTime + duration');
   check(
       Recording(
-              id: 'c2',
-              cameraId: 1,
-              cameraName: '录制中',
-              startTime: DateTime(2024),
-              durationSeconds: 0,
-              recording: true)
-          .durationLabel ==
+                  id: 'c2',
+                  cameraId: 1,
+                  cameraName: '录制中',
+                  startTime: DateTime(2024),
+                  durationSeconds: 0,
+                  recording: true)
+              .durationLabel ==
           '录制中',
       '录制中的片段不给虚假时长');
   check(
@@ -430,6 +424,84 @@ Future<void> main() async {
       '拖动到空白时取最近的真实片段');
   check(TimelineMath.nearestClip(<Recording>[], day) == null,
       '无片段时返回 null（UI 显示真实空态）');
+
+  print('── 会话失效闭环（HTTP 465 / 登录页 HTML）──');
+  check(SynoErrorCode.portalAuthRequired == 465, 'DSM 门户拦截码 465');
+  check(SynoErrorCode.ipMismatch == 150, '登录来源 IP 变化码 150');
+  check(SynoException.fromCode(465).needsReLogin, '465 触发重新登录');
+  check(SynoException.fromCode(150).needsReLogin, '150 触发重新登录');
+  check(SynoErrorCode.describe(465).contains('重新登录'), '465 文案引导重新登录');
+  check(!SynoErrorCode.describe(465).contains('地址/端口'), '465 文案不再误导为地址/端口配置错误');
+  check(SynoErrorCode.describe(150).contains('重新登录'), '150 文案引导重新登录');
+  final loginHtml = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+      '<meta name="viewport" content="width=device-width"></head>'
+      '<body>Synology DSM login</body></html>';
+  final portal465 = classifyHttpResponse(465, loginHtml);
+  check(
+      portal465.code == SynoErrorCode.portalAuthRequired &&
+          portal465.needsReLogin,
+      'HTTP 465 + 登录页 HTML → 会话失效（不再降级错误码 100）');
+  check(classifyHttpResponse(200, loginHtml).needsReLogin,
+      'HTTP 200 + 登录页 HTML（门户重定向）→ 会话失效');
+  check(
+      classifyHttpResponse(465, '{"success":false,"error":{"code":400}}')
+          .needsReLogin,
+      '465 无论 body 内容都判会话失效');
+  final notFound = classifyHttpResponse(
+      404, '<html><body><h1>404 Not Found</h1></body></html>');
+  check(!notFound.needsReLogin, '404 普通网页不误判为会话失效');
+  check(notFound.message.contains('地址/端口/HTTPS'), '404 保留地址/端口/HTTPS 类建议');
+  check(!classifyHttpResponse(500, 'upstream error').needsReLogin,
+      '非 HTML 非 JSON 错误不误判为会话失效');
+  check(!classifyHttpResponse(200, '{"success":true,"data":{}}').needsReLogin,
+      '正常 JSON 响应不受影响');
+
+  print('── UI 错误分类（不再一律误报地址/权限问题）──');
+  check(classifyFailure(SynoException.fromCode(465)).needsReLogin,
+      '465 异常 → 会话失效视图');
+  check(classifyFailure(SynoException.fromCode(106)).needsReLogin,
+      '106 异常 → 会话失效视图');
+  check(classifyFailure('SynoException(465): 登录会话已过期，请重新登录').needsReLogin,
+      '诊断文本 → 会话失效视图');
+  check(
+      classifyFailure('MjpegException: 登录会话已过期或被 NAS 登出，请重新登录（HTTP 465）')
+          .needsReLogin,
+      'MJPEG 465 文本 → 会话失效视图');
+  check(
+      classifyFailure('HTTPS 证书不受信任，若 NAS 使用自签证书').kind ==
+          FailureKind.certificate,
+      '证书错误独立分类');
+  check(
+      classifyFailure('连接超时，请检查地址与网络').kind == FailureKind.network, '网络超时独立分类');
+  check(!classifyFailure('权限不足，请确认账号具备访问权限').needsReLogin, '权限错误不误判为会话失效');
+  check(!classifyFailure(null).needsReLogin, '空错误不误判');
+  check(needsReLoginError(SynoException.fromCode(465)),
+      'needsReLoginError 覆盖异常对象');
+  check(needsReLoginError('登录会话已过期，请重新登录'), 'needsReLoginError 覆盖纯文本');
+  check(!needsReLoginError('错误码 102'), 'needsReLoginError 不误判普通错误');
+
+  print('── 上次连接信息（会话失效后登录页预填，不含密码）──');
+  const lc = LastConnection(
+      host: 'nas.naeeeo.com',
+      account: 'naeeo',
+      https: true,
+      port: 5001,
+      twoFactor: true,
+      trustDevice: true);
+  final lc2 = LastConnection.fromJson(lc.toJson());
+  check(lc2.host == 'nas.naeeeo.com' && lc2.account == 'naeeo',
+      '连接信息序列化往返保留地址与账号');
+  check(lc2.port == 5001 && lc2.https && lc2.twoFactor && lc2.trustDevice,
+      '端口 / HTTPS / 2FA / 信任设备往返');
+  check(
+      !lc.toJson().containsKey('password') &&
+          !lc.toJson().containsKey('passwd'),
+      '连接信息绝不包含密码字段');
+  check(
+      !const LastConnection(host: '', account: 'a', https: true, port: 5001)
+          .isValid,
+      '空地址视为无效，不预填');
+  check(LastConnection.fromJson(<String, dynamic>{}).https, '缺失字段安全默认 HTTPS');
 
   print('\n✅ 全部 $_checks 项断言通过');
 }

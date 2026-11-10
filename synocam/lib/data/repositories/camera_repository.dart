@@ -41,8 +41,7 @@ class CameraRepository {
   Future<List<int>> snapshotBytes(int cameraId) =>
       _client.getSnapshot(cameraId);
 
-  Future<String> testSnapshot(int cameraId) =>
-      _client.testSnapshot(cameraId);
+  Future<String> testSnapshot(int cameraId) => _client.testSnapshot(cameraId);
 
   String get mediaDiagnostic => _client.mediaDiagnostic;
 
@@ -51,9 +50,8 @@ class CameraRepository {
   String snapshotUrl(int cameraId, {int? nonce}) =>
       _client.snapshotUrl(cameraId, nonce: nonce);
 
-  String liveStreamUrl(Camera camera, {int? startTime, int? endTime}) =>
-      _client.liveStreamUrl(
-          camera: camera, startTime: startTime, endTime: endTime);
+  String liveStreamUrl(Camera camera, {int? startTime, int? endTime}) => _client
+      .liveStreamUrl(camera: camera, startTime: startTime, endTime: endTime);
 
   String rtspUrl(Camera camera) => _client.rtspUrl(camera.id);
 

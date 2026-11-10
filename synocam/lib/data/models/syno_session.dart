@@ -46,3 +46,44 @@ class SynoSession {
         did: j['did'] as String?,
       );
 }
+
+/// 上次成功登录的连接参数（不含密码，绝不持久化密码）。
+/// 会话失效回到登录页时用于预填，让用户只需重输密码（+ 验证码），
+/// 不必重新敲一遍 DDNS / 端口 / 账号；纯 Dart，便于自检覆盖序列化往返。
+class LastConnection {
+  const LastConnection({
+    required this.host,
+    required this.account,
+    required this.https,
+    required this.port,
+    this.twoFactor = false,
+    this.trustDevice = false,
+  });
+
+  final String host;
+  final String account;
+  final bool https;
+  final int port;
+  final bool twoFactor;
+  final bool trustDevice;
+
+  bool get isValid => host.trim().isNotEmpty && account.trim().isNotEmpty;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'host': host,
+        'account': account,
+        'https': https,
+        'port': port,
+        'twoFactor': twoFactor,
+        'trustDevice': trustDevice,
+      };
+
+  factory LastConnection.fromJson(Map<String, dynamic> j) => LastConnection(
+        host: j['host'] as String? ?? '',
+        account: j['account'] as String? ?? '',
+        https: j['https'] as bool? ?? true,
+        port: j['port'] as int? ?? 5001,
+        twoFactor: j['twoFactor'] as bool? ?? false,
+        trustDevice: j['trustDevice'] as bool? ?? false,
+      );
+}

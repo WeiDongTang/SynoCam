@@ -1,6 +1,8 @@
 // 全局应用状态（Provider + ChangeNotifier）。
 // 所有列表数据均来自真实 Synology Web API；加载失败保留错误码供 UI 展示，
 // 绝不回退到任何静态演示数据。
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../core/config/feature_flags.dart';
@@ -27,6 +29,12 @@ class AppState extends ChangeNotifier {
 
   final FeatureFlags flags = FeatureFlags();
 
+  AppState() {
+    // 任何 API 链路（JSON / 快照 / 录像下载 / PTZ）识别出会话失效，
+    // 都统一在此清除僵尸会话，不再让每个页面各自报一次 465。
+    _client.onSessionExpired = _onClientSessionExpired;
+  }
+
   AppPreferences get prefs => _prefs;
 
   bool _bootstrapped = false;
@@ -35,6 +43,42 @@ class AppState extends ChangeNotifier {
   SynoSession? _session;
   SynoSession? get session => _session;
   bool get isLoggedIn => _session != null;
+
+  bool _sessionExpired = false;
+  bool get sessionExpired => _sessionExpired;
+
+  /// 上次连接参数（登录页预填用，不含密码）。
+  LastConnection? get lastConnection => _prefs.lastConnection;
+
+  /// SYNO.API.Info 的真实探测结果（失败时含原因），供设置页展示。
+  String get discoverDiagnostic => _client.discoverDiagnostic;
+
+  /// 统一的会话失效处理：清内存中的僵尸会话 + 打标记 + 通知 UI 回登录页。
+  /// 不请求 NAS、不删持久化的设备令牌与连接信息，保证重登可免验证码并预填。
+  void _onClientSessionExpired() {
+    if (_session == null) return;
+    _sessionExpired = true;
+    _session = null;
+    _camerasList = <Camera>[];
+    _recordings = <Recording>[];
+    _events = <SurveillanceEvent>[];
+    _license = null;
+    _cameraState = LoadState.idle;
+    _mediaState = LoadState.idle;
+    _client.clearSession();
+    unawaited(_prefs.setSessionExpired(true));
+    // 避免在 build 期间同步触发 setState / 页面切换断言。
+    unawaited(Future.microtask(notifyListeners));
+  }
+
+  /// 供 MJPEG 流客户端 / 子页面主动上报会话失效（幂等）。
+  void reportSessionExpired() => _onClientSessionExpired();
+
+  bool _handleReLogin(SynoException e) {
+    if (!e.needsReLogin) return false;
+    _onClientSessionExpired();
+    return true;
+  }
 
   /// NAS 实际支持的 API 能力（SYNO.API.Info 结果），供诊断页展示。
   Map<String, SynoApiInfoEntry> get apiInfo => _client.apiInfo;
@@ -92,22 +136,40 @@ class AppState extends ChangeNotifier {
     }).toList();
   }
 
-  Map<int, String> get cameraNames => <int, String>{
-        for (final c in _camerasList) c.id: c.name
-      };
+  Map<int, String> get cameraNames =>
+      <int, String>{for (final c in _camerasList) c.id: c.name};
 
   // ── 生命周期 ──
   Future<void> bootstrap() async {
     await _store.init();
     applyCertificatePolicy(_prefs.allowUntrustedCert);
     _readEventIds = _prefs.readEventIds;
+    _sessionExpired = _prefs.sessionExpired;
     _session = await _auth.restore();
     if (_session != null) {
-      // 恢复的会话也要重新发现 API（上次进程的能力缓存已随内存消失）。
-      await _client.discoverApis();
-      await refreshCameras();
-      await refreshMedia();
-      await refreshNasInfo();
+      // 冷启动探针：恢复的 SID 是否仍被 NAS 接受。外网 / DDNS 场景下 DSM
+      // 常以 HTTP 465 + 登录页 HTML 拒绝过期会话，必须在这里就识别出来，
+      // 否则会带着僵尸会话逐页刷出 465。网络 / 证书类错误保留会话，
+      // 由各页面显示真实诊断（不误清登录态）。
+      try {
+        await _client.validateSession();
+      } on SynoException catch (e) {
+        if (e.needsReLogin) _onClientSessionExpired();
+      } catch (_) {
+        // 保留会话，交由页面显示真实网络错误。
+      }
+      if (_session != null) {
+        if (_sessionExpired) {
+          _sessionExpired = false;
+          await _prefs.setSessionExpired(false);
+        }
+        await _client.discoverApis();
+      }
+      // 每一步后都检查：能力发现或刷新途中若再次判定会话失效，
+      // 立即短路，避免后续调用带着已清空的会话报错。
+      if (_session != null) await refreshCameras();
+      if (_session != null) await refreshMedia();
+      if (_session != null) await refreshNasInfo();
     }
     _bootstrapped = true;
     notifyListeners();
@@ -138,6 +200,20 @@ class AppState extends ChangeNotifier {
       deviceName: deviceName,
       remember: remember,
     );
+    _sessionExpired = false;
+    await _prefs.setSessionExpired(false);
+    // 保存非敏感连接参数，供会话失效后回到登录页自动预填（绝不存密码）。
+    final previous = _prefs.lastConnection;
+    await _prefs.saveLastConnection(LastConnection(
+      host: _session!.host,
+      account: account,
+      https: https,
+      port: port ?? (https ? SynoEndpoints.httpsPort : SynoEndpoints.httpPort),
+      twoFactor: (otpCode != null && otpCode.isNotEmpty) ||
+          enableDeviceToken ||
+          (previous?.twoFactor ?? false),
+      trustDevice: enableDeviceToken || (previous?.trustDevice ?? false),
+    ));
     await refreshCameras();
     await refreshMedia();
     await refreshNasInfo();
@@ -146,6 +222,8 @@ class AppState extends ChangeNotifier {
 
   Future<void> logout() async {
     await _auth.logout();
+    _sessionExpired = false;
+    await _prefs.setSessionExpired(false);
     _session = null;
     _camerasList = <Camera>[];
     _recordings = <Recording>[];
@@ -173,7 +251,7 @@ class AppState extends ChangeNotifier {
     } on SynoException catch (e) {
       _cameraError = e.diagnostic;
       _cameraState = LoadState.error;
-      if (e.needsReLogin) _session = null;
+      _handleReLogin(e);
     } catch (e) {
       _cameraError = '$e';
       _cameraState = LoadState.error;
@@ -193,6 +271,7 @@ class AppState extends ChangeNotifier {
     } on SynoException catch (e) {
       _mediaError = e.diagnostic;
       _mediaState = LoadState.error;
+      _handleReLogin(e);
     } catch (e) {
       _mediaError = '$e';
       _mediaState = LoadState.error;

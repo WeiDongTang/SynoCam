@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/config/app_config.dart';
+import '../../core/network/syno_api.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
 import '../../data/models/camera.dart';
@@ -155,15 +156,19 @@ class LivePage extends StatelessWidget {
                   textAlign: TextAlign.center,
                   style: TextStyle(color: AppColors.sub, fontSize: 13)),
               const SizedBox(height: 6),
-              Text('该提示来自 NAS 的真实响应，可据此定位权限 / 版本 / 网络问题。',
+              Text(classifyFailure(state.cameraError).advice,
                   textAlign: TextAlign.center,
                   style: TextStyle(color: AppColors.faint, fontSize: 11)),
               const SizedBox(height: 12),
               FilledButton.icon(
-                onPressed: () => state.refreshCameras(),
+                onPressed: classifyFailure(state.cameraError).needsReLogin
+                    ? () => state.reportSessionExpired()
+                    : () => state.refreshCameras(),
                 icon: const AppIcon(AppIcons.refresh,
                     size: 16, color: Colors.white),
-                label: const Text('重试'),
+                label: Text(classifyFailure(state.cameraError).needsReLogin
+                    ? '重新登录'
+                    : '重试'),
               ),
             ],
           ),

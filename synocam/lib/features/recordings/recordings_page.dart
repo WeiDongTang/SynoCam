@@ -4,6 +4,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/network/syno_api.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
 import '../../core/utils/launcher.dart';
@@ -104,8 +105,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
               child: const Text('取消')),
           TextButton(
               onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('删除',
-                  style: TextStyle(color: AppColors.red))),
+              child: const Text('删除', style: TextStyle(color: AppColors.red))),
         ],
       ),
     );
@@ -131,7 +131,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            _Header('录像与快照',
+            _Header(
+                '录像与快照',
                 state.mediaState == LoadState.ready
                     ? 'NAS 返回 ${state.recordings.length} 条真实录像事件'
                     : '检索 NAS 上的真实录像事件'),
@@ -150,9 +151,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
             ),
             if (_tab == 0) _filterChips(),
             Expanded(
-              child: _tab == 1
-                  ? _snapshotGuide()
-                  : _body(context, state, recs),
+              child: _tab == 1 ? _snapshotGuide() : _body(context, state, recs),
             ),
           ],
         ),
@@ -164,25 +163,27 @@ class _RecordingsPageState extends State<RecordingsPage> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16),
         child: Row(
-          children: List<Widget>.generate(_filters.length, (i) => Padding(
-                padding: const EdgeInsets.only(right: 7),
-                child: ChoiceChip(
-                  label: Text(_filters[i]),
-                  selected: i == _filter,
-                  showCheckmark: false,
-                  onSelected: (_) => setState(() => _filter = i),
-                  labelStyle: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: i == _filter ? Colors.white : AppColors.sub),
-                  selectedColor: AppColors.ink,
-                  backgroundColor: AppColors.card,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20)),
-                  side: BorderSide(
-                      color: i == _filter ? AppColors.ink : AppColors.line),
-                ),
-              )).toList(),
+          children: List<Widget>.generate(
+              _filters.length,
+              (i) => Padding(
+                    padding: const EdgeInsets.only(right: 7),
+                    child: ChoiceChip(
+                      label: Text(_filters[i]),
+                      selected: i == _filter,
+                      showCheckmark: false,
+                      onSelected: (_) => setState(() => _filter = i),
+                      labelStyle: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: i == _filter ? Colors.white : AppColors.sub),
+                      selectedColor: AppColors.ink,
+                      backgroundColor: AppColors.card,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20)),
+                      side: BorderSide(
+                          color: i == _filter ? AppColors.ink : AppColors.line),
+                    ),
+                  )).toList(),
         ),
       );
 
@@ -194,7 +195,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
     if (state.mediaState == LoadState.error) {
       return _notice(
         state.mediaError ?? '录像读取失败',
-        '该错误来自 NAS 的真实响应（Event/Query）。请确认账号具备录像查看权限。',
+        classifyFailure(state.mediaError).advice,
         () => state.refreshMedia(),
       );
     }
@@ -257,12 +258,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   _openPlayback(context, state, r);
                   break;
                 case 'external':
-                  openExternalUrl(context,
-                      state.recordingDownloadUrl(r), label: '录像片段');
+                  openExternalUrl(context, state.recordingDownloadUrl(r),
+                      label: '录像片段');
                   break;
                 case 'copy':
-                  copyToClipboard(context,
-                      state.recordingDownloadUrl(r),
+                  copyToClipboard(context, state.recordingDownloadUrl(r),
                       label: '真实录像链接已复制');
                   break;
                 case 'lock':
@@ -281,8 +281,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
               const PopupMenuItem<String>(
                   value: 'external', child: Text('用系统播放器打开')),
               PopupMenuItem<String>(
-                  value: 'lock',
-                  child: Text(r.locked ? '解锁片段' : '锁定片段')),
+                  value: 'lock', child: Text(r.locked ? '解锁片段' : '锁定片段')),
               const PopupMenuItem<String>(
                   value: 'delete', child: Text('从 NAS 删除')),
             ],
@@ -314,32 +313,37 @@ class _RecordingsPageState extends State<RecordingsPage> {
         ),
       );
 
-  Widget _notice(String title, String detail, VoidCallback onRetry) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              const AppIcon(AppIcons.info, size: 30, color: AppColors.faint),
-              const SizedBox(height: 12),
-              Text(title,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 13, color: AppColors.sub)),
-              const SizedBox(height: 6),
-              Text(detail,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 11, color: AppColors.faint)),
-              const SizedBox(height: 14),
-              FilledButton.icon(
-                onPressed: onRetry,
-                icon: const AppIcon(AppIcons.refresh,
-                    size: 16, color: Colors.white),
-                label: const Text('重新读取'),
-              ),
-            ],
-          ),
+  Widget _notice(String title, String detail, VoidCallback onRetry) {
+    final relogin = classifyFailure(title).needsReLogin;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const AppIcon(AppIcons.info, size: 30, color: AppColors.faint),
+            const SizedBox(height: 12),
+            Text(title,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: AppColors.sub)),
+            const SizedBox(height: 6),
+            Text(detail,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, color: AppColors.faint)),
+            const SizedBox(height: 14),
+            FilledButton.icon(
+              onPressed: relogin
+                  ? () => context.read<AppState>().reportSessionExpired()
+                  : onRetry,
+              icon: const AppIcon(AppIcons.refresh,
+                  size: 16, color: Colors.white),
+              label: Text(relogin ? '重新登录' : '重新读取'),
+            ),
+          ],
         ),
-      );
+      ),
+    );
+  }
 }
 
 class _Header extends StatelessWidget {
@@ -361,7 +365,8 @@ class _Header extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 3),
-            Text(subtitle, style: TextStyle(fontSize: 12, color: AppColors.sub)),
+            Text(subtitle,
+                style: TextStyle(fontSize: 12, color: AppColors.sub)),
           ],
         ),
       );

@@ -53,7 +53,10 @@ class MediaRepository {
     if (data == null) return <Map<String, dynamic>>[];
     final raw = data['logs'] ?? data['events'] ?? data['list'];
     if (raw is! List) return <Map<String, dynamic>>[];
-    return raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    return raw
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
   }
 
   List<dynamic> _eventsOf(Map<String, dynamic> data) {

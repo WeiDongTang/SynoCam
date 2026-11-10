@@ -122,8 +122,7 @@ class Camera {
         // GetLiveViewPath 返回的字段值是完整流 URL（含 StmKey），
         // 必须提取密钥本身，不能把整条 URL 当成 StmKey 拼进请求。
         if (s.contains('://') || s.contains('StmKey=')) {
-          final m = RegExp(
-                  r'StmKey[=":\s]*"?([A-Za-z0-9_\-]{8,})"?',
+          final m = RegExp(r'StmKey[=":\s]*"?([A-Za-z0-9_\-]{8,})"?',
                   caseSensitive: false)
               .firstMatch(s);
           if (m != null) return m.group(1);

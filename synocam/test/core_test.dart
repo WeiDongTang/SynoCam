@@ -209,8 +209,7 @@ void main() {
       });
       expect(info['SYNO.SurveillanceStation.Camera']!.effectiveVersion(), 9);
       expect(info['SYNO.SurveillanceStation.Event']!.effectiveVersion(), 1);
-      expect(info['SYNO.SurveillanceStation.Camera']!.cgi,
-          '/webapi/entry.cgi');
+      expect(info['SYNO.SurveillanceStation.Camera']!.cgi, '/webapi/entry.cgi');
       expect(SynoEndpoints.cgiFromPath(null), SynoEndpoints.entryCgi);
     });
 
@@ -242,7 +241,9 @@ void main() {
         'status': 2,
         'mode': 1,
         'videoCodec': 'H264',
-      }, <int, String>{1: '前门'});
+      }, <int, String>{
+        1: '前门'
+      });
       expect(r.durationSeconds, 60);
       expect(r.locked, isTrue);
       expect(r.eventType, '移动侦测');
@@ -254,8 +255,8 @@ void main() {
       expect(SynoErrorCode.isUnsupported(102), isTrue);
       expect(SynoErrorCode.isUnsupported(103), isTrue);
       expect(SynoErrorCode.isUnsupported(400), isFalse);
-      expect(SynoException.fromCode(102).diagnostic.contains('错误码 102'),
-          isTrue);
+      expect(
+          SynoException.fromCode(102).diagnostic.contains('错误码 102'), isTrue);
     });
   });
 
@@ -269,15 +270,11 @@ void main() {
           port: 5001,
           did: 'DID-7');
       expect(s.cookieHeader, 'id=SID-9; did=DID-7');
-      expect(SynoSession.fromJson(s.toJson()).cookieHeader,
-          'id=SID-9; did=DID-7');
+      expect(
+          SynoSession.fromJson(s.toJson()).cookieHeader, 'id=SID-9; did=DID-7');
       expect(
           const SynoSession(
-                  sid: 'S',
-                  host: 'nas',
-                  account: 'a',
-                  https: false,
-                  port: 5000)
+                  sid: 'S', host: 'nas', account: 'a', https: false, port: 5000)
               .cookieHeader,
           'id=S');
     });
@@ -287,8 +284,7 @@ void main() {
       expect(MediaBytes.isImage(<int>[0x89, 0x50, 0x4E, 0x47, 0x0D]), isTrue);
       expect(MediaBytes.isImage(<int>[0x7B, 0x22, 0x65, 0x72]), isFalse);
       expect(MediaBytes.isImage(<int>[0xFF, 0xD8]), isFalse);
-      expect(
-          MediaBytes.looksLikeJsonError('{"error":{"code":400}}'.codeUnits),
+      expect(MediaBytes.looksLikeJsonError('{"error":{"code":400}}'.codeUnits),
           isTrue);
       expect(MediaBytes.looksLikeJsonError(<int>[]), isTrue);
       expect(
@@ -300,25 +296,32 @@ void main() {
     test('按文件头推断录像容器扩展名', () {
       expect(
           MediaBytes.extensionFor(<int>[
-            0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D
+            0,
+            0,
+            0,
+            24,
+            0x66,
+            0x74,
+            0x79,
+            0x70,
+            0x69,
+            0x73,
+            0x6F,
+            0x6D
           ]),
           '.mp4');
       expect(MediaBytes.extensionFor(<int>[0x1A, 0x45, 0xDF, 0xA3]), '.mkv');
       expect(MediaBytes.extensionFor(<int>[0x52, 0x49, 0x46, 0x46]), '.avi');
-      expect(
-          MediaBytes.extensionFor(
-              <int>[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+      expect(MediaBytes.extensionFor(<int>[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
           '.mp4');
     });
   });
 
   group('MJPEG 流解析（App 内连续画面 / 回放）', () {
     test('boundary 提取与字节子序列定位', () {
-      expect(
-          boundaryFrom('multipart/x-mixed-replace; boundary=myBoundary'),
+      expect(boundaryFrom('multipart/x-mixed-replace; boundary=myBoundary'),
           'myBoundary');
-      expect(
-          boundaryFrom('multipart/x-mixed-replace; boundary="quoted-b"'),
+      expect(boundaryFrom('multipart/x-mixed-replace; boundary="quoted-b"'),
           'quoted-b');
       expect(boundaryFrom('image/jpeg'), '');
       expect(indexOfBytes(<int>[1, 2, 3, 4, 5], <int>[3, 4]), 2);
@@ -348,12 +351,21 @@ void main() {
 
     test('裸 JPEG 流按 SOI/EOI 切帧', () async {
       final raw = <int>[
-        0xFF, 0xD8, 0xFF, 0xAA, 0xFF, 0xD9,
-        0xFF, 0xD8, 0xFF, 0xBB, 0xFF, 0xD9,
+        0xFF,
+        0xD8,
+        0xFF,
+        0xAA,
+        0xFF,
+        0xD9,
+        0xFF,
+        0xD8,
+        0xFF,
+        0xBB,
+        0xFF,
+        0xD9,
       ];
       final frames = await parseRawJpegFrames(
-              Stream<List<int>>.fromIterable(<List<int>>[raw]))
-          .toList();
+          Stream<List<int>>.fromIterable(<List<int>>[raw])).toList();
       expect(frames.length, 2);
       expect(frames[0][3], 0xAA);
       expect(frames[1][3], 0xBB);
@@ -375,13 +387,11 @@ void main() {
       expect(TimelineMath.fractionOf(day.add(const Duration(hours: 6)), day),
           closeTo(0.25, 1e-9));
       expect(TimelineMath.timeAt(0.5, day).hour, 12);
-      expect(TimelineMath.timeLabel(DateTime(2024, 5, 1, 9, 5, 3)),
-          '09:05:03');
-      expect(TimelineMath.fractionOf(day.add(const Duration(days: 2)), day),
-          1.0);
+      expect(TimelineMath.timeLabel(DateTime(2024, 5, 1, 9, 5, 3)), '09:05:03');
       expect(
-          TimelineMath.fractionOf(
-              day.subtract(const Duration(hours: 5)), day),
+          TimelineMath.fractionOf(day.add(const Duration(days: 2)), day), 1.0);
+      expect(
+          TimelineMath.fractionOf(day.subtract(const Duration(hours: 5)), day),
           0.0);
     });
 
@@ -400,6 +410,68 @@ void main() {
               <Recording>[clip], day.add(const Duration(hours: 23))),
           clip);
       expect(TimelineMath.nearestClip(<Recording>[], day), isNull);
+    });
+  });
+
+  group('会话失效闭环（HTTP 465 / 登录页 HTML）', () {
+    test('465 / 150 触发重新登录，文案不再误报地址问题', () {
+      expect(SynoErrorCode.portalAuthRequired, 465);
+      expect(SynoErrorCode.ipMismatch, 150);
+      expect(SynoException.fromCode(465).needsReLogin, isTrue);
+      expect(SynoException.fromCode(150).needsReLogin, isTrue);
+      expect(SynoErrorCode.describe(465).contains('重新登录'), isTrue);
+      expect(SynoErrorCode.describe(465).contains('地址/端口'), isFalse);
+    });
+
+    test('465 + 登录页 HTML 归类为会话失效，404 网页不误判', () {
+      final html = '<!DOCTYPE html><html><head>'
+          '<meta name="viewport" content="width=device-width"></head>'
+          '<body>Synology DSM login</body></html>';
+      expect(classifyHttpResponse(465, html).needsReLogin, isTrue);
+      expect(classifyHttpResponse(200, html).needsReLogin, isTrue);
+      expect(classifyHttpResponse(465, html).code,
+          SynoErrorCode.portalAuthRequired);
+      expect(classifyHttpResponse(465, '{"error":{"code":400}}').needsReLogin,
+          isTrue);
+      final notFound = classifyHttpResponse(
+          404, '<html><body><h1>404 Not Found</h1></body></html>');
+      expect(notFound.needsReLogin, isFalse);
+      expect(notFound.message.contains('地址/端口/HTTPS'), isTrue);
+      expect(classifyHttpResponse(500, 'upstream error').needsReLogin, isFalse);
+    });
+
+    test('classifyFailure / needsReLoginError 覆盖异常与文本', () {
+      expect(classifyFailure(SynoException.fromCode(465)).needsReLogin, isTrue);
+      expect(classifyFailure(SynoException.fromCode(106)).needsReLogin, isTrue);
+      expect(classifyFailure('登录会话已过期，请重新登录').needsReLogin, isTrue);
+      expect(classifyFailure('HTTPS 证书不受信任').kind, FailureKind.certificate);
+      expect(classifyFailure('连接超时，请检查地址与网络').kind, FailureKind.network);
+      expect(classifyFailure(null).needsReLogin, isFalse);
+      expect(needsReLoginError(SynoException.fromCode(465)), isTrue);
+      expect(needsReLoginError('MjpegException: 登录会话已过期，请重新登录'), isTrue);
+      expect(needsReLoginError('错误码 102'), isFalse);
+    });
+
+    test('上次连接信息序列化往返且绝不含密码', () {
+      const c = LastConnection(
+          host: 'nas.naeeeo.com',
+          account: 'naeeo',
+          https: true,
+          port: 5001,
+          twoFactor: true,
+          trustDevice: true);
+      final c2 = LastConnection.fromJson(c.toJson());
+      expect(c2.host, 'nas.naeeeo.com');
+      expect(c2.account, 'naeeo');
+      expect(c2.port, 5001);
+      expect(c2.twoFactor, isTrue);
+      expect(c2.trustDevice, isTrue);
+      expect(c.toJson().containsKey('password'), isFalse);
+      expect(c.isValid, isTrue);
+      expect(
+          const LastConnection(host: '', account: 'a', https: true, port: 5001)
+              .isValid,
+          isFalse);
     });
   });
 }

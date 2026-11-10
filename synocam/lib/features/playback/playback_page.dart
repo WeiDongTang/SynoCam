@@ -19,6 +19,7 @@ import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../core/network/mjpeg_stream.dart';
+import '../../core/network/syno_api.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
 import '../../core/utils/launcher.dart';
@@ -145,6 +146,19 @@ class _PlaybackPageState extends State<PlaybackPage> {
       }
       return;
     } catch (e) {
+      // 465 / 登录页 HTML：交回登录页重登，不继续尝试同样会 465 的回放流，
+      // 也不把整段 HTML 甩到画面区域。
+      if (needsReLoginError(e)) {
+        state.reportSessionExpired();
+        if (mounted) {
+          setState(() {
+            _loading = false;
+            _error = '登录会话已过期，请重新登录';
+            _diagnostic = '$e';
+          });
+        }
+        return;
+      }
       _diagnostic = '录像文件回放失败：$e';
     }
 
@@ -160,6 +174,10 @@ class _PlaybackPageState extends State<PlaybackPage> {
           if (mounted) setState(() => _mjpegFrame = frame);
         },
         onError: (Object e) {
+          if (needsReLoginError(e)) {
+            state.reportSessionExpired();
+            return;
+          }
           if (mounted) setState(() => _error = '回放流不可用：$e');
         },
         cancelOnError: true,
@@ -190,8 +208,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
     if (total <= 0) return;
     final pos = c.value.position.inSeconds;
     if (mounted) {
-      setState(
-          () => _videoFraction = (pos / total).clamp(0.0, 1.0).toDouble());
+      setState(() => _videoFraction = (pos / total).clamp(0.0, 1.0).toDouble());
     }
   }
 
@@ -264,9 +281,8 @@ class _PlaybackPageState extends State<PlaybackPage> {
           const _SectionLabel('片段内进度（可拖动）'),
           Slider(
             value: _videoFraction,
-            onChanged: _videoReady
-                ? (v) => setState(() => _videoFraction = v)
-                : null,
+            onChanged:
+                _videoReady ? (v) => setState(() => _videoFraction = v) : null,
             onChangeEnd: _videoReady ? (v) => _seekVideo(v) : null,
           ),
           const SizedBox(height: 6),
@@ -318,31 +334,36 @@ class _PlaybackPageState extends State<PlaybackPage> {
         ),
       );
 
-  Widget _errorView(AppState state) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              const AppIcon(AppIcons.alert, size: 28, color: AppColors.red),
-              const SizedBox(height: 8),
-              Text(_error ?? '回放不可用',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 12, color: Colors.white70)),
-              const SizedBox(height: 6),
-              Text(_short(state.mediaDiagnostic),
-                  textAlign: TextAlign.center,
-                  maxLines: 3,
-                  style: const TextStyle(fontSize: 9, color: Colors.white38)),
-              const SizedBox(height: 10),
-              OutlinedButton(
-                onPressed: () => _load(state),
-                child: const Text('重新读取'),
-              ),
-            ],
-          ),
+  Widget _errorView(AppState state) {
+    final fv = classifyFailure(_error);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const AppIcon(AppIcons.alert, size: 28, color: AppColors.red),
+            const SizedBox(height: 8),
+            Text(_error ?? '回放不可用',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12, color: Colors.white70)),
+            const SizedBox(height: 6),
+            Text(_short('${fv.advice}\n${state.mediaDiagnostic}'),
+                textAlign: TextAlign.center,
+                maxLines: 3,
+                style: const TextStyle(fontSize: 9, color: Colors.white38)),
+            const SizedBox(height: 10),
+            OutlinedButton(
+              onPressed: fv.needsReLogin
+                  ? () => state.reportSessionExpired()
+                  : () => _load(state),
+              child: Text(fv.needsReLogin ? '重新登录' : '重新读取'),
+            ),
+          ],
         ),
-      );
+      ),
+    );
+  }
 
   String _short(String s) => s.length > 160 ? '${s.substring(0, 160)}…' : s;
 
@@ -363,16 +384,18 @@ class _PlaybackPageState extends State<PlaybackPage> {
           tooltip: '后退 10 秒',
           icon: const AppIcon(AppIcons.skipBack, size: 20),
           onPressed: _videoReady
-              ? () => _seekVideo(
-                  (_videoFraction - 10 / totalSeconds).clamp(0.0, 1.0).toDouble())
+              ? () => _seekVideo((_videoFraction - 10 / totalSeconds)
+                  .clamp(0.0, 1.0)
+                  .toDouble())
               : null,
         ),
         IconButton(
           tooltip: '前进 10 秒',
           icon: const AppIcon(AppIcons.skipFwd, size: 20),
           onPressed: _videoReady
-              ? () => _seekVideo(
-                  (_videoFraction + 10 / totalSeconds).clamp(0.0, 1.0).toDouble())
+              ? () => _seekVideo((_videoFraction + 10 / totalSeconds)
+                  .clamp(0.0, 1.0)
+                  .toDouble())
               : null,
         ),
         const SizedBox(width: 4),
@@ -435,10 +458,8 @@ class _PlaybackPageState extends State<PlaybackPage> {
             ),
             child: Stack(
               children: _clips.map((r) {
-                final left =
-                    TimelineMath.fractionOf(r.startTime, _dayStart);
-                final width = (r.durationSeconds /
-                        TimelineMath.secondsPerDay)
+                final left = TimelineMath.fractionOf(r.startTime, _dayStart);
+                final width = (r.durationSeconds / TimelineMath.secondsPerDay)
                     .clamp(0.004, 1.0)
                     .toDouble();
                 return Positioned(
@@ -484,8 +505,8 @@ class _PlaybackPageState extends State<PlaybackPage> {
   Widget _infoRow(String label, String value) => ListTile(
         dense: true,
         visualDensity: VisualDensity.compact,
-        title: Text(label,
-            style: TextStyle(fontSize: 11.5, color: AppColors.sub)),
+        title:
+            Text(label, style: TextStyle(fontSize: 11.5, color: AppColors.sub)),
         trailing: Text(value,
             style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
       );
@@ -507,8 +528,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
             if (r.id == _active.id) return;
             setState(() {
               _active = r;
-              _fraction =
-                  TimelineMath.fractionOf(r.startTime, _dayStart);
+              _fraction = TimelineMath.fractionOf(r.startTime, _dayStart);
             });
             _load(state);
           },
@@ -545,10 +565,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
                     style:
                         TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 6),
-                Text(
-                    _diagnostic.isEmpty
-                        ? state.mediaDiagnostic
-                        : _diagnostic,
+                Text(_diagnostic.isEmpty ? state.mediaDiagnostic : _diagnostic,
                     style: TextStyle(fontSize: 10.5, color: AppColors.sub)),
                 const SizedBox(height: 6),
                 Text(
@@ -571,16 +588,15 @@ class _PlaybackPageState extends State<PlaybackPage> {
           const SizedBox(height: 8),
           OutlinedButton.icon(
             onPressed: () => copyToClipboard(
-                context,
-                state.recordingDownloadUrl(_active),
+                context, state.recordingDownloadUrl(_active),
                 label: '真实录像链接已复制'),
             icon: const AppIcon(AppIcons.download, size: 16),
             label: const Text('复制真实录像链接'),
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
-            onPressed: () => openExternalUrl(context, state.webUiUrl(),
-                label: 'SS 网页端'),
+            onPressed: () =>
+                openExternalUrl(context, state.webUiUrl(), label: 'SS 网页端'),
             icon: const AppIcon(AppIcons.server, size: 16),
             label: const Text('在 Surveillance Station 网页端回放'),
           ),

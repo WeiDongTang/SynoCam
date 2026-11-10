@@ -29,8 +29,8 @@ class Recording {
   final String eventType;
   final String codec;
 
-  DateTime get endTime =>
-      startTime.add(Duration(seconds: durationSeconds > 0 ? durationSeconds : 1));
+  DateTime get endTime => startTime
+      .add(Duration(seconds: durationSeconds > 0 ? durationSeconds : 1));
 
   String get durationLabel {
     if (recording) return '录制中';
@@ -43,8 +43,8 @@ class Recording {
       '${startTime.year} / ${startTime.month.toString().padLeft(2, '0')} / ${startTime.day.toString().padLeft(2, '0')}';
 
   /// 从 Event/Query 的一条记录解析（字段名跨版本兼容）。
-  factory Recording.fromEventJson(Map<String, dynamic> j,
-      Map<int, String> cameraNames) {
+  factory Recording.fromEventJson(
+      Map<String, dynamic> j, Map<int, String> cameraNames) {
     final cameraId = _asInt(j['cameraId'] ?? j['camId'] ?? j['cameraid']);
     final start = _asInt(j['startTime'] ?? j['time'] ?? j['timestamp']);
     final stop = _asInt(j['stopTime'] ?? j['endTime'] ?? j['startTime']);
@@ -174,8 +174,7 @@ class TimelineMath {
     return best;
   }
 
-  static String timeLabel(DateTime t) =>
-      '${t.hour.toString().padLeft(2, '0')}:'
+  static String timeLabel(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:'
       '${t.minute.toString().padLeft(2, '0')}:'
       '${t.second.toString().padLeft(2, '0')}';
 }

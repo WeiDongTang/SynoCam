@@ -44,8 +44,7 @@ class CameraAddPage extends StatelessWidget {
           _hero(),
           const SizedBox(height: 18),
           const _Section('为什么 App 内不能直接添加'),
-          _note(
-              '添加摄像头需要在 NAS 上完成设备搜索、品牌/协议匹配、许可证占用与录像参数初始化。'
+          _note('添加摄像头需要在 NAS 上完成设备搜索、品牌/协议匹配、许可证占用与录像参数初始化。'
               'Synology 公开的 Surveillance Station Web API 只提供对「已添加设备」的查询与控制，'
               '不提供物理添加接口；局域网发现与二维码配网属于 SS 内部私有协议。'
               '此前版本里的设备列表与「添加成功」提示均为界面演示，现已移除。'),
@@ -149,7 +148,13 @@ class CameraAddPage extends StatelessWidget {
 
   int? _licenseMax(Map<String, dynamic>? license) {
     if (license == null) return null;
-    for (final k in <String>['maxCam', 'maxCamera', 'max', 'total', 'licenseNum']) {
+    for (final k in <String>[
+      'maxCam',
+      'maxCamera',
+      'max',
+      'total',
+      'licenseNum'
+    ]) {
       final v = license[k];
       if (v is num) return v.toInt();
       if (v is String) return int.tryParse(v);
@@ -177,6 +182,5 @@ class _Section extends StatelessWidget {
 Widget _note(String text) => Padding(
       padding: const EdgeInsets.fromLTRB(4, 0, 4, 6),
       child: Text(text,
-          style: TextStyle(
-              fontSize: 11.5, color: AppColors.sub, height: 1.6)),
+          style: TextStyle(fontSize: 11.5, color: AppColors.sub, height: 1.6)),
     );

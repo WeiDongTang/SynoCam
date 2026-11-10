@@ -24,9 +24,8 @@ class _CameraEditPageState extends State<CameraEditPage> {
   late final TextEditingController _name =
       TextEditingController(text: widget.camera.name);
   late bool _enabled = widget.camera.enabled;
-  late String _quality = widget.camera.quality.isEmpty
-      ? '默认'
-      : widget.camera.quality;
+  late String _quality =
+      widget.camera.quality.isEmpty ? '默认' : widget.camera.quality;
   bool _saving = false;
 
   static const List<String> _qualities = <String>[
@@ -119,8 +118,8 @@ class _CameraEditPageState extends State<CameraEditPage> {
             title: const Text('打开 SS 网页端配置',
                 style: TextStyle(fontSize: 13, color: AppColors.blue)),
             trailing: const AppIcon(AppIcons.chevron, size: 15),
-            onTap: () => openExternalUrl(context, state.webUiUrl(),
-                label: 'SS 网页端'),
+            onTap: () =>
+                openExternalUrl(context, state.webUiUrl(), label: 'SS 网页端'),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
@@ -153,8 +152,7 @@ class _CameraEditPageState extends State<CameraEditPage> {
               }
             },
             icon: const AppIcon(AppIcons.power, size: 16, color: AppColors.red),
-            label: const Text('停用此摄像机',
-                style: TextStyle(color: AppColors.red)),
+            label: const Text('停用此摄像机', style: TextStyle(color: AppColors.red)),
             style: OutlinedButton.styleFrom(
                 minimumSize: const Size.fromHeight(46),
                 shape: RoundedRectangleBorder(

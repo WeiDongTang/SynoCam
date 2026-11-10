@@ -5,6 +5,8 @@
 //  - 二进制/流端点（GetSnapshot、VideoStreaming/Stream）走另一条鉴权，
 //    必须同时带 Cookie: id=<sid>; did=<did>，否则 DSM 返回 HTTP 465 +
 //    {"error":{"code":400},"success":false}（这正是「画面加载失败 465」的根因）；
+//  - HTTP 465 还有第二种语义：SID 已过期时 DSM 门户返回「登录页 HTML」，
+//    必须归类为「会话失效 → 重新登录」，不能误报成地址/HTTPS 配置错误；
 //  - GetSnapshot 参数随版本变化：v1/v8 用 cameraId+camStm，v9 用 id+profileType，
 //    故做多组合回退，并缓存成功组合；
 //  - StmKey 来自 Camera/GetLiveViewPath 返回的完整 URL，不是 Camera/List 的普通字段。
@@ -48,7 +50,32 @@ class SynoClient {
   String _mediaDiagnostic = '尚未请求';
   String get mediaDiagnostic => _mediaDiagnostic;
 
+  /// SYNO.API.Info 探测的真实结果（失败时保留原因，供设置页展示）。
+  String _discoverDiagnostic = '尚未探测';
+  String get discoverDiagnostic => _discoverDiagnostic;
+
   _SnapshotRecipe? _snapshotRecipe;
+
+  /// 登录进行中标志：登录请求 / 能力发现期间不触发会话失效回调，
+  /// 避免把一次新的登录误判成「旧会话过期」。
+  bool _authenticating = false;
+
+  /// 任何 API 链路识别出会话失效时回调（由 AppState 注册），覆盖
+  /// JSON 错误码 106/119/150、HTTP 465 门户页、快照 / 录像下载等所有路径。
+  void Function()? onSessionExpired;
+
+  void _notifySessionExpired() {
+    if (_authenticating || _session == null) return;
+    onSessionExpired?.call();
+  }
+
+  /// 只清内存中的僵尸会话：不请求 NAS、不删持久化的设备令牌与连接信息，
+  /// 以便重新登录时继续使用 did 免验证码并预填上次的连接参数。
+  void clearSession() {
+    _session = null;
+    _apiInfo = <String, SynoApiInfoEntry>{};
+    _snapshotRecipe = null;
+  }
 
   SynoSession? get session => _session;
   bool get isLoggedIn => _session != null;
@@ -72,12 +99,9 @@ class SynoClient {
   }
 
   int _versionFor(String api) =>
-      _apiInfo[api]?.effectiveVersion() ??
-      SynoApi.defaultVersions[api] ??
-      1;
+      _apiInfo[api]?.effectiveVersion() ?? SynoApi.defaultVersions[api] ?? 1;
 
-  String _cgiFor(String api) =>
-      _apiInfo[api]?.cgi ?? SynoEndpoints.entryCgi;
+  String _cgiFor(String api) => _apiInfo[api]?.cgi ?? SynoEndpoints.entryCgi;
 
   /// 查询 NAS 实际支持的 API 与版本。
   Future<void> discoverApis() async {
@@ -106,17 +130,38 @@ class SynoClient {
       },
     );
     try {
-      final r = await _dio.get<dynamic>(url);
-      final body = r.data;
-      final json = body is String
-          ? jsonDecode(body) as Map<String, dynamic>
-          : Map<String, dynamic>.from(body as Map);
-      if (json['success'] == true && json['data'] is Map) {
-        _apiInfo = parseApiInfo(Map<String, dynamic>.from(json['data'] as Map));
+      // 走统一的 _getRaw：HTTP 465 / 登录页 HTML 会被正确分类为会话失效，
+      // 不再被静默吞掉，从而避免「僵尸会话」继续刷各页面。
+      final resp = await _getRaw(url);
+      final data = resp.data;
+      if (resp.success && data != null) {
+        _apiInfo = parseApiInfo(data);
+        _discoverDiagnostic = 'SYNO.API.Info 返回 ${_apiInfo.length} 个接口';
+      } else {
+        _discoverDiagnostic =
+            'SYNO.API.Info 返回 success=false（错误码 ${resp.error?.code ?? 0}）';
       }
-    } catch (_) {
+    } catch (e) {
       _apiInfo = <String, SynoApiInfoEntry>{};
+      _discoverDiagnostic = 'SYNO.API.Info 读取失败：$e';
     }
+  }
+
+  /// 需要认证的会话探针：恢复旧 SID 后先打一次 Camera/List，让 HTTP 465 /
+  /// 登录页 HTML 在刷新各页面之前就被识别为「会话失效」，直接回登录页。
+  Future<void> validateSession() async {
+    await call(
+      api: SynoApi.camera,
+      method: SynoMethod.list,
+      params: <String, String?>{
+        'privCamType': '3',
+        'streamInfo': 'true',
+        'camStm': '1',
+        'start': '0',
+        'limit': '1',
+        'basic': 'true',
+      },
+    );
   }
 
   Future<SynoSession> login({
@@ -152,22 +197,31 @@ class SynoClient {
       },
     );
 
-    final data = (await _getRaw(url)).requireData();
-    final sid = data['sid'] as String?;
-    if (sid == null || sid.isEmpty) {
-      throw SynoException(SynoErrorCode.unknown, '登录成功但未返回 SID');
+    _authenticating = true;
+    try {
+      final data = (await _getRaw(url)).requireData();
+      final sid = data['sid'] as String?;
+      if (sid == null || sid.isEmpty) {
+        throw SynoException(SynoErrorCode.unknown, '登录成功但未返回 SID');
+      }
+      _session = SynoSession(
+        sid: sid,
+        host: _stripScheme(host),
+        account: account,
+        https: https,
+        port: p,
+        did: data['did'] as String?,
+      );
+      _snapshotRecipe = null;
+      try {
+        await discoverApis();
+      } catch (e) {
+        _discoverDiagnostic = 'SYNO.API.Info 读取失败：$e（已按默认版本继续）';
+      }
+      return _session!;
+    } finally {
+      _authenticating = false;
     }
-    _session = SynoSession(
-      sid: sid,
-      host: _stripScheme(host),
-      account: account,
-      https: https,
-      port: p,
-      did: data['did'] as String?,
-    );
-    _snapshotRecipe = null;
-    await discoverApis();
-    return _session!;
   }
 
   Future<void> logout() async {
@@ -222,6 +276,8 @@ class SynoClient {
     if (responseType == ResponseType.bytes) {
       final r = await _dio.get<List<int>>(url,
           options: Options(responseType: ResponseType.bytes));
+      final sessionError = _classifyBytes(r.statusCode ?? 0, r.data);
+      if (sessionError != null) throw sessionError;
       return <String, dynamic>{'bytes': r.data, 'status': r.statusCode};
     }
     return (await _getRaw(url)).requireData();
@@ -282,7 +338,10 @@ class SynoClient {
     );
     final raw = data['cameras'] ?? data['camList'] ?? data['list'];
     if (raw is! List) return <Map<String, dynamic>>[];
-    return raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    return raw
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
   }
 
   /// GetLiveViewPath：返回 cameraId → 完整 MJPEG 流 URL（含 StmKey）。
@@ -370,24 +429,36 @@ class SynoClient {
   List<_SnapshotRecipe> _snapshotRecipes(int cameraId) {
     final v = _versionFor(SynoApi.camera);
     final all = <_SnapshotRecipe>[
-      _SnapshotRecipe(v, <String, String>{
-        'cameraId': '$cameraId',
-        'id': '$cameraId',
-        'camStm': '1',
-        'profileType': '1',
-      }, 'v$v 全参数'),
-      _SnapshotRecipe(1, <String, String>{
-        'cameraId': '$cameraId',
-        'camStm': '1',
-      }, 'v1 cameraId'),
-      _SnapshotRecipe(8, <String, String>{
-        'cameraId': '$cameraId',
-        'camStm': '1',
-      }, 'v8 cameraId'),
-      _SnapshotRecipe(9, <String, String>{
-        'id': '$cameraId',
-        'profileType': '1',
-      }, 'v9 id/profileType'),
+      _SnapshotRecipe(
+          v,
+          <String, String>{
+            'cameraId': '$cameraId',
+            'id': '$cameraId',
+            'camStm': '1',
+            'profileType': '1',
+          },
+          'v$v 全参数'),
+      _SnapshotRecipe(
+          1,
+          <String, String>{
+            'cameraId': '$cameraId',
+            'camStm': '1',
+          },
+          'v1 cameraId'),
+      _SnapshotRecipe(
+          8,
+          <String, String>{
+            'cameraId': '$cameraId',
+            'camStm': '1',
+          },
+          'v8 cameraId'),
+      _SnapshotRecipe(
+          9,
+          <String, String>{
+            'id': '$cameraId',
+            'profileType': '1',
+          },
+          'v9 id/profileType'),
     ];
     final cached = _snapshotRecipe;
     if (cached != null) {
@@ -397,8 +468,7 @@ class SynoClient {
     return all;
   }
 
-  String _snapshotUrl(
-          int cameraId, int version, Map<String, String> extra) =>
+  String _snapshotUrl(int cameraId, int version, Map<String, String> extra) =>
       buildSynoUrl(
         host: _requireSession().host,
         cgi: _cgiFor(SynoApi.camera),
@@ -436,9 +506,17 @@ class SynoClient {
           _mediaDiagnostic = '快照成功：${r.label}（${bytes.length} 字节）';
           return bytes;
         }
+        // 会话失效（HTTP 465 / 登录页 HTML / JSON 106/119/150）立即上抛，
+        // 不再逐个参数组合重试，也不会把整段 HTML 当作画面错误展示。
+        final sessionError = _classifyBytes(status, bytes);
+        if (sessionError != null) {
+          _mediaDiagnostic = '快照失败：登录会话已过期（HTTP $status）';
+          throw sessionError;
+        }
         notes.add('${r.label}: HTTP $status ${_bodyHint(bytes)}');
       } on DioException catch (e) {
-        notes.add('${r.label}: HTTP ${e.response?.statusCode ?? '?'} ${e.type.name}');
+        notes.add(
+            '${r.label}: HTTP ${e.response?.statusCode ?? '?'} ${e.type.name}');
       }
     }
     _mediaDiagnostic = '快照全部失败 → ${notes.join(' | ')}';
@@ -452,8 +530,7 @@ class SynoClient {
     return _snapshotUrl(
       cameraId,
       r?.version ?? _versionFor(SynoApi.camera),
-      r?.params ??
-          <String, String>{'cameraId': '$cameraId', 'camStm': '1'},
+      r?.params ?? <String, String>{'cameraId': '$cameraId', 'camStm': '1'},
     );
   }
 
@@ -466,8 +543,9 @@ class SynoClient {
     if (m != null) {
       return 'DSM 错误码 ${m.group(1)}（${SynoErrorCode.describe(int.parse(m.group(1)!))}）';
     }
-    return text.replaceAll(RegExp(r'\s+'), ' ').substring(
-        0, text.length > 60 ? 60 : text.length);
+    return text
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .substring(0, text.length > 60 ? 60 : text.length);
   }
 
   // ── MJPEG 直播 / 回放流 ──────────────────────────────────────────────
@@ -549,7 +627,9 @@ class SynoClient {
         );
         final bytes = resp.data;
         final status = resp.statusCode ?? 0;
-        if (status == 200 && bytes != null && !MediaBytes.looksLikeJsonError(bytes)) {
+        if (status == 200 &&
+            bytes != null &&
+            !MediaBytes.looksLikeJsonError(bytes)) {
           _mediaDiagnostic = '录像下载成功：${params.keys.join(',')}'
               '（${bytes.length} 字节）';
           return RecordingFile(
@@ -560,14 +640,19 @@ class SynoClient {
                 'application/octet-stream',
           );
         }
+        final sessionError = _classifyBytes(status, bytes);
+        if (sessionError != null) {
+          _mediaDiagnostic = '录像下载失败：登录会话已过期（HTTP $status）';
+          throw sessionError;
+        }
         notes.add('HTTP $status ${_bodyHint(bytes)}');
       } on DioException catch (e) {
         notes.add('HTTP ${e.response?.statusCode ?? '?'} ${e.type.name}');
       }
     }
     _mediaDiagnostic = '录像下载全部失败 → ${notes.join(' | ')}';
-    throw SynoException(SynoErrorCode.unknown,
-        '录像片段获取失败：${notes.take(2).join('；')}');
+    throw SynoException(
+        SynoErrorCode.unknown, '录像片段获取失败：${notes.take(2).join('；')}');
   }
 
   String _recordingUrl(Map<String, String> params) => buildSynoUrl(
@@ -643,12 +728,14 @@ class SynoClient {
     final method = locked ? SynoMethod.lock : SynoMethod.unlock;
     try {
       await call(
-          api: SynoApi.recording, method: method,
+          api: SynoApi.recording,
+          method: method,
           params: <String, String?>{'id': id});
     } on SynoException catch (e) {
       if (!SynoErrorCode.isUnsupported(e.code)) rethrow;
       await call(
-          api: SynoApi.event, method: method,
+          api: SynoApi.event,
+          method: method,
           params: <String, String?>{'id': id});
     }
   }
@@ -708,7 +795,10 @@ class SynoClient {
     );
     final raw = data['presets'] ?? data['list'];
     if (raw is! List) return <Map<String, dynamic>>[];
-    return raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    return raw
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
   }
 
   Future<void> setCameraEnabled(List<int> ids, bool enabled) async {
@@ -741,23 +831,60 @@ class SynoClient {
     return _mediaDiagnostic;
   }
 
+  /// 把「非 JSON 的 HTTP 响应」分类，并在判定为会话失效时通知全局。
+  SynoException _classified(int status, String body) {
+    final e = classifyHttpResponse(status, body);
+    if (e.needsReLogin) _notifySessionExpired();
+    return e;
+  }
+
+  /// 二进制端点（快照 / 录像下载）的会话失效判定：HTTP 465、登录页 HTML、
+  /// 或 JSON 里的 106/119/150 错误码都归为「需要重新登录」。
+  SynoException? _classifyBytes(int status, List<int>? bytes) {
+    final text = bytes == null || bytes.isEmpty
+        ? ''
+        : latin1.decode(bytes.take(300).toList(), allowInvalid: true);
+    final e = classifyHttpResponse(status, text);
+    if (e.needsReLogin) {
+      _notifySessionExpired();
+      return e;
+    }
+    final m = RegExp(r'"code"\s*:\s*(\d+)').firstMatch(text);
+    if (m != null) {
+      final code = int.tryParse(m.group(1)!) ?? 0;
+      final se = SynoException.fromCode(code);
+      if (se.needsReLogin) {
+        _notifySessionExpired();
+        return se;
+      }
+    }
+    return null;
+  }
+
+  SynoResponse _parseBody(dynamic body, int status) {
+    if (body is String) {
+      try {
+        return SynoResponse.fromBody(body);
+      } on FormatException {
+        throw _classified(status, body);
+      }
+    }
+    if (body is Map) {
+      return SynoResponse.fromJson(Map<String, dynamic>.from(body));
+    }
+    throw _classified(status, body == null ? '' : body.toString());
+  }
+
   Future<SynoResponse> _getRaw(String url) async {
     try {
       final r = await _dio.get<dynamic>(url);
-      final body = r.data;
-      if (body is String) {
-        try {
-          return SynoResponse.fromBody(body);
-        } on FormatException {
-          throw SynoException(SynoErrorCode.unknown,
-              '服务器返回的不是 JSON（HTTP ${r.statusCode}），请检查地址/端口/HTTPS 设置');
-        }
+      final resp = _parseBody(r.data, r.statusCode ?? 0);
+      // JSON 形式的会话失效（106/119/150）同样要触发统一恢复闭环。
+      final code = resp.error?.code;
+      if (code != null && SynoException.fromCode(code).needsReLogin) {
+        _notifySessionExpired();
       }
-      if (body is Map) {
-        return SynoResponse.fromJson(Map<String, dynamic>.from(body));
-      }
-      throw SynoException(SynoErrorCode.unknown,
-          '无法解析服务器响应（HTTP ${r.statusCode}）');
+      return resp;
     } on DioException catch (e) {
       if (e.type == DioExceptionType.connectionTimeout ||
           e.type == DioExceptionType.sendTimeout ||

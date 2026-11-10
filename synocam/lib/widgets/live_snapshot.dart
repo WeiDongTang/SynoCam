@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/network/mjpeg_stream.dart';
+import '../core/network/syno_api.dart';
 import '../core/theme/app_colors.dart';
 import '../core/theme/app_icons.dart';
 import '../data/models/camera.dart';
@@ -107,8 +108,8 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
 
   void _startPolling(AppState state) {
     _modeLabel = '快照';
-    _pollTimer = Timer.periodic(
-        Duration(seconds: _pollSeconds), (_) => _poll(state));
+    _pollTimer =
+        Timer.periodic(Duration(seconds: _pollSeconds), (_) => _poll(state));
     _poll(state);
   }
 
@@ -124,6 +125,11 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
         });
       }
     } catch (e) {
+      // 会话失效：上报全局恢复闭环，不再无意义地反复重试快照。
+      if (needsReLoginError(e)) {
+        state.reportSessionExpired();
+        return;
+      }
       if (mounted) setState(() => _error = '$e');
     } finally {
       _busy = false;
@@ -147,6 +153,11 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
       },
       onError: (Object e) {
         if (!mounted) return;
+        // MJPEG 的 465 是会话失效，不要降级成会同样报 465 的快照轮询。
+        if (needsReLoginError(e)) {
+          state.reportSessionExpired();
+          return;
+        }
         _fallbackToPolling(state, '连续流失败：$e');
       },
       cancelOnError: true,
@@ -187,9 +198,10 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
       return _placeholder('摄像机已停用');
     }
     if (_frame == null && _error != null) {
+      final fv = classifyFailure(_error);
       return _ErrorTile(
-        message: '画面加载失败',
-        detail: '$_error\n${state.mediaDiagnostic}',
+        message: fv.title,
+        detail: '${fv.advice}\n$_error\n${state.mediaDiagnostic}',
         onRetry: () {
           setState(() => _error = null);
           _start();
@@ -247,8 +259,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
           decoration: BoxDecoration(
               color: Colors.black54, borderRadius: BorderRadius.circular(5)),
-          child: Text(text,
-              style: TextStyle(fontSize: 8.5, color: color)),
+          child: Text(text, style: TextStyle(fontSize: 8.5, color: color)),
         ),
       );
 

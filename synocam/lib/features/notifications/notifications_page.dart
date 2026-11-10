@@ -4,6 +4,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/network/syno_api.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
 import '../../core/utils/launcher.dart';
@@ -66,7 +67,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            _Header('通知',
+            _Header(
+                '通知',
                 state.mediaState == LoadState.ready
                     ? 'NAS 真实事件 ${state.events.length} 条 · $unread 条未读'
                     : '读取 NAS 上的真实事件'),
@@ -147,8 +149,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
     }
     if (state.mediaState == LoadState.error) {
       return _notice(state.mediaError ?? '事件读取失败',
-          '错误来自 NAS 真实响应，请检查账号的 Surveillance Station 权限。',
-          () => state.refreshMedia());
+          classifyFailure(state.mediaError).advice, () => state.refreshMedia());
     }
     if (list.isEmpty) {
       return _notice(
@@ -170,8 +171,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
     );
   }
 
-  Widget _eventTile(BuildContext context, AppState state,
-      SurveillanceEvent e, bool read) {
+  Widget _eventTile(
+      BuildContext context, AppState state, SurveillanceEvent e, bool read) {
     final meta = _meta(e.type);
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -186,8 +187,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
         title: Text(e.title,
             style:
                 const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-        subtitle: Text(
-            '${_time(e.time)} · ${e.detail}',
+        subtitle: Text('${_time(e.time)} · ${e.detail}',
             style: TextStyle(fontSize: 10, color: AppColors.faint)),
         trailing: read
             ? null
@@ -231,8 +231,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                 subtitle: Text('本机提醒静音（不影响 NAS 端事件记录）',
                     style: TextStyle(fontSize: 11, color: AppColors.sub)),
                 trailing: Switch(
-                    value: state.prefs.dnd,
-                    onChanged: (v) => state.setDnd(v)),
+                    value: state.prefs.dnd, onChanged: (v) => state.setDnd(v)),
               ),
               const Divider(height: 1),
               ListTile(
@@ -251,32 +250,37 @@ class _NotificationsPageState extends State<NotificationsPage> {
         ),
       );
 
-  Widget _notice(String title, String detail, VoidCallback onRetry) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              const AppIcon(AppIcons.info, size: 30, color: AppColors.faint),
-              const SizedBox(height: 12),
-              Text(title,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 13, color: AppColors.sub)),
-              const SizedBox(height: 6),
-              Text(detail,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 11, color: AppColors.faint)),
-              const SizedBox(height: 14),
-              FilledButton.icon(
-                onPressed: onRetry,
-                icon: const AppIcon(AppIcons.refresh,
-                    size: 16, color: Colors.white),
-                label: const Text('重新读取'),
-              ),
-            ],
-          ),
+  Widget _notice(String title, String detail, VoidCallback onRetry) {
+    final relogin = classifyFailure(title).needsReLogin;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const AppIcon(AppIcons.info, size: 30, color: AppColors.faint),
+            const SizedBox(height: 12),
+            Text(title,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: AppColors.sub)),
+            const SizedBox(height: 6),
+            Text(detail,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, color: AppColors.faint)),
+            const SizedBox(height: 14),
+            FilledButton.icon(
+              onPressed: relogin
+                  ? () => context.read<AppState>().reportSessionExpired()
+                  : onRetry,
+              icon: const AppIcon(AppIcons.refresh,
+                  size: 16, color: Colors.white),
+              label: Text(relogin ? '重新登录' : '重新读取'),
+            ),
+          ],
         ),
-      );
+      ),
+    );
+  }
 }
 
 class _Header extends StatelessWidget {
@@ -290,10 +294,11 @@ class _Header extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             Text(title,
-                style: const TextStyle(
-                    fontSize: 29, fontWeight: FontWeight.w700)),
+                style:
+                    const TextStyle(fontSize: 29, fontWeight: FontWeight.w700)),
             const SizedBox(height: 3),
-            Text(subtitle, style: TextStyle(fontSize: 12, color: AppColors.sub)),
+            Text(subtitle,
+                style: TextStyle(fontSize: 12, color: AppColors.sub)),
           ],
         ),
       );

@@ -48,8 +48,7 @@ class SynoApi {
   static const String snapshot = 'SYNO.SurveillanceStation.Snapshot';
   static const String event = 'SYNO.SurveillanceStation.Event';
   static const String log = 'SYNO.SurveillanceStation.Log';
-  static const String externalEvent =
-      'SYNO.SurveillanceStation.ExternalEvent';
+  static const String externalEvent = 'SYNO.SurveillanceStation.ExternalEvent';
   static const String actionRule = 'SYNO.SurveillanceStation.ActionRule';
   static const String license = 'SYNO.SurveillanceStation.License';
   static const String homeMode = 'SYNO.SurveillanceStation.HomeMode';
@@ -263,6 +262,11 @@ class SynoErrorCode {
   static const int duplicateLogin = 107;
   static const int invalidSession = 119;
 
+  /// DSM nginx 自定义状态码：会话失效 / 需要重新登录。
+  /// 与官方 JSON 错误码 106/119 描述同一状态，但在外网 / DDNS / QuickConnect
+  /// 场景下 DSM 常不返回 JSON，而是 HTTP 465 + 一段登录页 HTML。
+  static const int portalAuthRequired = 465;
+
   static const int badCredentials = 400;
   static const int accountDisabled = 401;
   static const int permissionDenied = 402;
@@ -273,6 +277,9 @@ class SynoErrorCode {
   static const int passwordExpiredNoChange = 408;
   static const int passwordExpired = 409;
   static const int passwordMustChange = 410;
+
+  /// 登录来源 IP 与登录时不一致（蜂窝网络切换 / DDNS 出口变化时会触发）。
+  static const int ipMismatch = 150;
 
   static const int invalidAccount = badCredentials;
   static const int wrongPassword = badCredentials;
@@ -295,6 +302,8 @@ class SynoErrorCode {
       106: '会话已超时，请重新登录',
       107: '会话被重复登录挤下线',
       119: '会话无效，请重新登录',
+      465: '登录会话已过期或被 NAS 登出，请重新登录（DSM 门户拦截）',
+      150: '登录来源 IP 已变化，请重新登录',
       400: '账号不存在或密码错误',
       401: '账号已被停用',
       402: '权限不足，请确认账号具备 Surveillance Station 访问权限',
@@ -324,7 +333,9 @@ class SynoException implements Exception {
       code == SynoErrorCode.sessionTimeout ||
       code == SynoErrorCode.duplicateLogin ||
       code == SynoErrorCode.permissionDenied ||
-      code == SynoErrorCode.invalidSession;
+      code == SynoErrorCode.invalidSession ||
+      code == SynoErrorCode.portalAuthRequired ||
+      code == SynoErrorCode.ipMismatch;
 
   bool get needsOtp =>
       code == SynoErrorCode.otpRequired ||
@@ -339,4 +350,120 @@ class SynoException implements Exception {
 
   @override
   String toString() => 'SynoException($code): $message';
+}
+
+/// 把「HTTP 状态 + 非 JSON 响应体」分类为可执行的 [SynoException]。
+///
+/// DSM 在外网 / DDNS / QuickConnect 场景下，SID 过期或被 NAS 登出时，Web API
+/// 端点常不返回官方 JSON 错误码（106/119），而是：
+///  * HTTP 465（DSM / nginx 自定义状态码）+ 一段登录页 HTML；或
+///  * HTTP 200 + 登录页 HTML（被门户重定向）。
+/// 这类响应必须归为「会话失效」以触发重新登录。旧实现一律降级为
+/// `错误码 100 + 请检查地址/端口/HTTPS`，把用户引向完全错误的排查方向，
+/// 且 App 会卡在「显示已登录、实则僵尸会话」的死局。
+///
+/// 纯函数：可在无 Flutter / 无网络的自检里直接覆盖。
+SynoException classifyHttpResponse(int statusCode, String body) {
+  final head = body.trimLeft().toLowerCase();
+  final lower = body.toLowerCase();
+  final isHtml = head.startsWith('<!doctype') ||
+      head.startsWith('<html') ||
+      head.startsWith('<head') ||
+      head.startsWith('<body') ||
+      (head.contains('<html') && head.contains('<meta'));
+  // 登录页 / DSM 门户页的典型特征。
+  final looksLikeLoginPage = isHtml &&
+      (lower.contains('synology') ||
+          lower.contains('dsm') ||
+          lower.contains('login') ||
+          lower.contains('width=device-width') ||
+          lower.contains('viewport'));
+
+  final sessionInvalid = statusCode == SynoErrorCode.portalAuthRequired ||
+      statusCode == SynoErrorCode.ipMismatch ||
+      looksLikeLoginPage ||
+      (statusCode == 200 && isHtml) ||
+      (statusCode == 0 && isHtml);
+
+  if (sessionInvalid) {
+    final suffix = statusCode > 0 ? '（HTTP $statusCode）' : '';
+    return SynoException(
+        SynoErrorCode.portalAuthRequired, '登录会话已过期或被 NAS 登出，请重新登录$suffix');
+  }
+  if (isHtml) {
+    // 其它网页（如 404 / nginx 错误页）保留地址类建议，避免误判会话。
+    return SynoException(SynoErrorCode.unknown,
+        'NAS 返回了网页而非 API 数据（HTTP $statusCode），请检查地址/端口/HTTPS 设置');
+  }
+  return SynoException(SynoErrorCode.unknown,
+      '服务器返回的不是 JSON（HTTP $statusCode），请检查地址/端口/HTTPS 设置');
+}
+
+/// 面向 UI 的错误分类：让各页面按真实错误类型显示建议，而不是写死
+/// 「请检查地址/端口/HTTPS」「确认账号具备权限」这类误导性副标题。
+enum FailureKind { session, certificate, network, permission, other }
+
+class FailureView {
+  const FailureView(this.kind, this.title, this.advice);
+
+  final FailureKind kind;
+  final String title;
+  final String advice;
+
+  bool get needsReLogin => kind == FailureKind.session;
+}
+
+/// 把任意异常或错误文本归类。UI 层拿到的往往是字符串（e.diagnostic），
+/// 因此同时支持 [SynoException] 对象与文本关键词两种输入。
+FailureView classifyFailure(Object? error) {
+  const session = FailureView(
+      FailureKind.session,
+      '登录会话已过期',
+      'NAS 已拒绝当前会话（常见于外网 / DDNS 放置一段时间后或手机网络切换）。'
+          '请重新登录；连接信息已为你保留，只需重输密码。');
+  if (error is SynoException) {
+    if (error.needsReLogin) return session;
+    switch (error.code) {
+      case SynoErrorCode.noPermission:
+      case SynoErrorCode.permissionDenied:
+        return const FailureView(FailureKind.permission, '权限不足',
+            '请确认该账号在 DSM 中具备 Surveillance Station 的访问权限。');
+      case SynoErrorCode.badCredentials:
+      case SynoErrorCode.otpRequired:
+      case SynoErrorCode.otpInvalid:
+      case SynoErrorCode.otpEnforced:
+        return FailureView(FailureKind.other, '登录被拒绝', error.message);
+    }
+  }
+  final s = error == null ? '' : error.toString();
+  if (s.contains('会话') &&
+          (s.contains('过期') || s.contains('失效') || s.contains('已过期')) ||
+      s.contains('重新登录') ||
+      s.contains('登录会话') ||
+      s.contains('HTTP 465') ||
+      s.contains('被 NAS 登出')) {
+    return session;
+  }
+  if (s.contains('证书') || s.contains('自签')) {
+    return const FailureView(FailureKind.certificate, 'HTTPS 证书不受信任',
+        '若 NAS 使用自签名证书，请在「设置」开启「信任自签名 HTTPS 证书」。');
+  }
+  if (s.contains('超时') || s.contains('网络错误') || s.contains('无法连接')) {
+    return const FailureView(
+        FailureKind.network, '网络连接失败', '请检查手机网络、NAS 地址 / 端口与 DSM 服务是否在线。');
+  }
+  if (s.contains('权限') || s.contains('错误码 105') || s.contains('错误码 402')) {
+    return const FailureView(FailureKind.permission, '权限不足',
+        '请确认该账号在 DSM 中具备 Surveillance Station 的访问权限。');
+  }
+  return const FailureView(
+      FailureKind.other, '读取失败', '以上为 NAS 返回的真实响应，可据此定位接口 / 版本 / 权限问题。');
+}
+
+/// 统一的「该错误是否需要重新登录」判定，供任意页面 / 组件调用。
+/// 同时覆盖 [SynoException] 对象、MjpegException（toString 含会话文案）
+/// 与 e.diagnostic 这类纯文本，避免各处重复实现关键词匹配。
+bool needsReLoginError(Object? error) {
+  if (error is SynoException && error.needsReLogin) return true;
+  return classifyFailure(error).needsReLogin;
 }

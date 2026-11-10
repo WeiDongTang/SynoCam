@@ -12,9 +12,15 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'syno_api.dart';
+
 class MjpegException implements Exception {
-  MjpegException(this.message);
+  MjpegException(this.message, {this.needsReLogin = false});
   final String message;
+
+  /// 该错误是否为「登录会话已过期」，供调用方触发全局重新登录。
+  final bool needsReLogin;
+
   @override
   String toString() => 'MjpegException: $message';
 }
@@ -70,13 +76,12 @@ Stream<Uint8List> parseMjpegFrames(
       if (start > 0) acc.removeRange(0, start); // 丢弃 preamble
       final he = indexOfBytes(acc, headerEndMark, delimiter.length);
       if (he < 0) break; // 头还没收齐
-      final header = latin1.decode(
-          acc.sublist(delimiter.length, he),
-          allowInvalid: true);
+      final header =
+          latin1.decode(acc.sublist(delimiter.length, he), allowInvalid: true);
       final dataStart = he + 4;
-      final lenMatch = RegExp(r'Content-Length\s*:\s*(\d+)',
-              caseSensitive: false)
-          .firstMatch(header);
+      final lenMatch =
+          RegExp(r'Content-Length\s*:\s*(\d+)', caseSensitive: false)
+              .firstMatch(header);
       if (lenMatch != null) {
         final len = int.tryParse(lenMatch.group(1)!) ?? 0;
         if (len <= 0) {
@@ -94,8 +99,7 @@ Stream<Uint8List> parseMjpegFrames(
         final next = indexOfBytes(acc, delimiter, dataStart);
         if (next < 0) break;
         var end = next;
-        while (end > dataStart &&
-            (acc[end - 1] == 13 || acc[end - 1] == 10)) {
+        while (end > dataStart && (acc[end - 1] == 13 || acc[end - 1] == 10)) {
           end--;
         }
         if (end > dataStart) {
@@ -156,12 +160,23 @@ class MjpegStreamClient {
       req.headers.set('Accept', 'multipart/x-mixed-replace, image/jpeg, */*');
       final resp = await req.close();
       if (resp.statusCode != 200) {
-        final hint = await resp
-            .transform(latin1.decoder)
-            .take(1)
-            .join();
-        throw MjpegException('HTTP ${resp.statusCode}'
-            '${hint.isEmpty ? '' : ' · ${hint.substring(0, hint.length > 90 ? 90 : hint.length)}'}');
+        final hint = await resp.transform(latin1.decoder).take(1).join();
+        final cut = hint.length > 300 ? hint.substring(0, 300) : hint;
+        // DSM 在 SID 过期时返回 HTTP 465 + 登录页 HTML：归类为会话失效，
+        // 绝不把整段 HTML 甩到预览/回放界面上。
+        final failure = classifyHttpResponse(resp.statusCode, cut);
+        if (failure.needsReLogin) {
+          throw MjpegException(failure.message, needsReLogin: true);
+        }
+        // 其它错误：去掉 HTML 标签，只保留简短可读的状态说明。
+        final plain = cut
+            .replaceAll(RegExp(r'<[^>]*>'), ' ')
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .trim();
+        final brief = plain.isEmpty
+            ? ''
+            : ' · ${plain.substring(0, plain.length > 60 ? 60 : plain.length)}';
+        throw MjpegException('HTTP ${resp.statusCode}$brief');
       }
       final ct = resp.headers.value('content-type') ?? '';
       final boundary = boundaryFrom(ct);

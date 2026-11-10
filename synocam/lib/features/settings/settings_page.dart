@@ -43,10 +43,9 @@ class SettingsPage extends StatelessWidget {
               SwitchListTile(
                 secondary: const BadgeIcon(AppIcons.shield),
                 title: const Text('信任自签名 HTTPS 证书',
-                    style: TextStyle(
-                        fontSize: 13.5, fontWeight: FontWeight.w600)),
-                subtitle: Text(
-                    '群晖自签证书默认会导致画面与接口全部失败；开启后放宽证书校验（仅限自有 NAS）',
+                    style:
+                        TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                subtitle: Text('群晖自签证书默认会导致画面与接口全部失败；开启后放宽证书校验（仅限自有 NAS）',
                     style: TextStyle(fontSize: 11, color: AppColors.sub)),
                 value: state.prefs.allowUntrustedCert,
                 onChanged: (v) => state.setAllowUntrustedCert(v),
@@ -55,15 +54,15 @@ class SettingsPage extends StatelessWidget {
               ListTile(
                 leading: const BadgeIcon(AppIcons.timeline),
                 title: const Text('画面刷新间隔',
-                    style: TextStyle(
-                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+                    style:
+                        TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
                 subtitle: Text('当前 ${state.prefs.pollSeconds} 秒 / 帧',
                     style: TextStyle(fontSize: 11, color: AppColors.sub)),
                 trailing: DropdownButton<int>(
                   value: state.prefs.pollSeconds,
                   items: <int>[1, 2, 3, 5, 10]
-                      .map((v) => DropdownMenuItem<int>(
-                          value: v, child: Text('$v s')))
+                      .map((v) =>
+                          DropdownMenuItem<int>(value: v, child: Text('$v s')))
                       .toList(),
                   onChanged: (v) => state.setPollSeconds(v ?? 2),
                   underline: const SizedBox.shrink(),
@@ -73,21 +72,19 @@ class SettingsPage extends StatelessWidget {
               SwitchListTile(
                 secondary: const BadgeIcon(AppIcons.live),
                 title: const Text('优先 MJPEG 连续流',
-                    style: TextStyle(
-                        fontSize: 13.5, fontWeight: FontWeight.w600)),
-                subtitle: Text(
-                    'NAS 返回流凭证时使用连续画面；不可用或 6 秒无帧自动降级为快照轮询',
+                    style:
+                        TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                subtitle: Text('NAS 返回流凭证时使用连续画面；不可用或 6 秒无帧自动降级为快照轮询',
                     style: TextStyle(fontSize: 11, color: AppColors.sub)),
                 value: state.prefs.streamMode,
                 onChanged: (v) => state.setStreamMode(v),
               ),
               const Divider(height: 1),
               SwitchListTile(
-                secondary: const BadgeIcon(AppIcons.moon,
-                    tone: IconTone.amber),
+                secondary: const BadgeIcon(AppIcons.moon, tone: IconTone.amber),
                 title: const Text('免打扰',
-                    style: TextStyle(
-                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+                    style:
+                        TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
                 subtitle: Text('本机事件提醒静音（真实持久化）',
                     style: TextStyle(fontSize: 11, color: AppColors.sub)),
                 value: state.prefs.dnd,
@@ -98,36 +95,42 @@ class SettingsPage extends StatelessWidget {
             _homeMode(state),
             const _Section('当前版本未提供的能力'),
             _group(<Widget>[
-              _disabledRow(AppIcons.lock, '密码锁 / Face ID',
-                  '需接入本机生物识别与安全存储'),
-              _disabledRow(AppIcons.airplay, 'AirPlay 镜像',
-                  '需原生投屏能力'),
+              _disabledRow(AppIcons.lock, '密码锁 / Face ID', '需接入本机生物识别与安全存储'),
+              _disabledRow(AppIcons.airplay, 'AirPlay 镜像', '需原生投屏能力'),
               _disabledRow(AppIcons.pip, '悬浮播放器', '依赖系统画中画能力'),
               _disabledRow(AppIcons.bolt, 'RTSP / H.265 原生播放器',
                   '当前为 MJPEG 连续流与快照轮询；RTSP 解码需原生插件'),
             ]),
             const _Section('管理与诊断'),
             _group(<Widget>[
-              _linkRow(AppIcons.refresh, '重新读取 NAS 全部数据',
+              _linkRow(
+                  AppIcons.refresh,
+                  '重新读取 NAS 全部数据',
                   'Camera/List · Event/Query · License',
                   () => state.refreshAll()),
-              _linkRow(AppIcons.server, '打开 Surveillance Station 网页端',
+              _linkRow(
+                  AppIcons.server,
+                  '打开 Surveillance Station 网页端',
                   '添加设备、录像计划、推送通知等高级配置',
                   () => openExternalUrl(context, state.webUiUrl(),
                       label: 'SS 网页端')),
-              _linkRow(AppIcons.bolt, '画面链路诊断',
+              _linkRow(
+                  AppIcons.bolt,
+                  '画面链路诊断',
                   '实测 GetSnapshot / Cookie / 流凭证，显示 NAS 真实响应',
                   () => _showMediaDiagnostic(context, state)),
-              _linkRow(AppIcons.info, 'API 能力诊断',
+              _linkRow(
+                  AppIcons.info,
+                  'API 能力诊断',
                   'SYNO.API.Info 返回 ${state.apiInfo.length} 个接口',
                   () => _showApiInfo(context, state)),
             ]),
             const SizedBox(height: 20),
             OutlinedButton.icon(
               onPressed: () => state.logout(),
-              icon: const AppIcon(AppIcons.power, size: 16, color: AppColors.red),
-              label: const Text('退出登录',
-                  style: TextStyle(color: AppColors.red)),
+              icon:
+                  const AppIcon(AppIcons.power, size: 16, color: AppColors.red),
+              label: const Text('退出登录', style: TextStyle(color: AppColors.red)),
               style: OutlinedButton.styleFrom(
                   minimumSize: const Size.fromHeight(46),
                   shape: RoundedRectangleBorder(
@@ -135,7 +138,9 @@ class SettingsPage extends StatelessWidget {
                   side: const BorderSide(color: AppColors.line)),
             ),
             const SizedBox(height: 10),
-            Text('提示：若画面/录像为空，请先看对应页面的 DSM 错误码，再到「API 能力诊断」确认 NAS 实际支持的接口。',
+            Text(
+                '提示：会话过期时 App 会自动回到登录页并保留连接信息，只需重输密码；'
+                '若画面/录像为空，请看对应页面的 DSM 错误码与「API 能力诊断」。',
                 style: TextStyle(fontSize: 10.5, color: AppColors.faint)),
           ],
         ),
@@ -157,8 +162,8 @@ class SettingsPage extends StatelessWidget {
             ? SwitchListTile(
                 secondary: const BadgeIcon(AppIcons.location),
                 title: const Text('Home Mode',
-                    style: TextStyle(
-                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+                    style:
+                        TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
                 subtitle: Text(
                     state.homeMode ? '已开启（NAS 真实状态）' : '已关闭（NAS 真实状态）',
                     style: TextStyle(fontSize: 11, color: AppColors.sub)),
@@ -175,8 +180,8 @@ class SettingsPage extends StatelessWidget {
             : ListTile(
                 leading: const BadgeIcon(AppIcons.location),
                 title: const Text('Home Mode',
-                    style: TextStyle(
-                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+                    style:
+                        TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
                 subtitle: Text('该 NAS 未返回 HomeMode/GetInfo 能力，无法在 App 内切换',
                     style: TextStyle(fontSize: 11, color: AppColors.sub)),
               ),
@@ -225,7 +230,7 @@ class SettingsPage extends StatelessWidget {
         content: SizedBox(
           width: double.maxFinite,
           child: entries.isEmpty
-              ? const Text('未能读取 SYNO.API.Info。请检查网络、端口与 HTTPS 设置。')
+              ? Text('未能读取 SYNO.API.Info。\n${state.discoverDiagnostic}')
               : ListView.builder(
                   shrinkWrap: true,
                   itemCount: entries.length,
@@ -233,8 +238,7 @@ class SettingsPage extends StatelessWidget {
                     final e = entries[i];
                     return ListTile(
                       dense: true,
-                      title: Text(e.key,
-                          style: const TextStyle(fontSize: 11)),
+                      title: Text(e.key, style: const TextStyle(fontSize: 11)),
                       subtitle: Text('path: ${e.value.cgi}',
                           style: const TextStyle(fontSize: 9)),
                       trailing: Text('v${e.value.effectiveVersion()}',
@@ -260,8 +264,8 @@ class SettingsPage extends StatelessWidget {
         title: Text(label,
             style:
                 const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-        trailing: Text(value,
-            style: TextStyle(fontSize: 11.5, color: AppColors.sub)),
+        trailing:
+            Text(value, style: TextStyle(fontSize: 11.5, color: AppColors.sub)),
         dense: true,
       );
 
@@ -270,16 +274,16 @@ class SettingsPage extends StatelessWidget {
         child: ListTile(
           leading: BadgeIcon(icon, tone: IconTone.neutral),
           title: Text(title,
-              style: const TextStyle(
-                  fontSize: 13.5, fontWeight: FontWeight.w600)),
+              style:
+                  const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
           subtitle: Text('当前版本不可用 · $reason',
               style: TextStyle(fontSize: 11, color: AppColors.sub)),
           enabled: false,
         ),
       );
 
-  Widget _linkRow(IconData icon, String title, String subtitle,
-          VoidCallback onTap) =>
+  Widget _linkRow(
+          IconData icon, String title, String subtitle, VoidCallback onTap) =>
       ListTile(
         leading: BadgeIcon(icon),
         title: Text(title,
@@ -318,8 +322,8 @@ class _Header extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             Text(title,
-                style: const TextStyle(
-                    fontSize: 29, fontWeight: FontWeight.w700)),
+                style:
+                    const TextStyle(fontSize: 29, fontWeight: FontWeight.w700)),
             const SizedBox(height: 3),
             Text(subtitle,
                 style: TextStyle(fontSize: 12, color: AppColors.sub)),
