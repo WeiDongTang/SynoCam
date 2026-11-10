@@ -4,7 +4,6 @@
 import '../../core/network/syno_api.dart';
 import '../../core/network/syno_client.dart';
 import '../models/camera.dart';
-import '../models/media.dart';
 
 class CameraRepository {
   CameraRepository(this._client);

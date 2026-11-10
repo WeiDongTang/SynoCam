@@ -556,8 +556,8 @@ class SynoClient {
             bytes: bytes,
             extension: MediaBytes.extensionFor(bytes),
             source: params.keys.join(','),
-            contentType:
-                '${resp.headers.value('content-type') ?? 'application/octet-stream'}',
+            contentType: resp.headers.value('content-type') ??
+                'application/octet-stream',
           );
         }
         notes.add('HTTP $status ${_bodyHint(bytes)}');
