@@ -137,10 +137,17 @@ String buildSynoUrl({
   }
   final slash = h.indexOf('/');
   if (slash >= 0) h = h.substring(0, slash);
+  // 地址里已带端口时必须剥离（显式 port 优先）。旧实现只在 p == null 时
+  // 剥离，若用户在「地址」里写了 192.168.1.10:5000、又在「端口」里填了
+  // 5000，Uri 会把 "192.168.1.10:5000" 当成主机名整体编码，DNS 解析必然
+  // 失败——表现就是点「登录」一直转圈、看起来毫无反应。
   final colon = h.lastIndexOf(':');
-  if (colon > 0 && p == null) {
-    p = int.tryParse(h.substring(colon + 1));
-    h = h.substring(0, colon);
+  if (colon > 0) {
+    final embedded = int.tryParse(h.substring(colon + 1));
+    if (embedded != null) {
+      p ??= embedded;
+      h = h.substring(0, colon);
+    }
   }
   p ??= https ? SynoEndpoints.httpsPort : SynoEndpoints.httpPort;
 
@@ -329,10 +336,13 @@ class SynoException implements Exception {
 
   factory SynoException.fromCode(int code) => SynoException(code);
 
+  // 仅「SID 本身失效」才需要重新登录。402（权限不足）/105（无权限）是账号
+  // 权限问题，重登一百次也解决不了；旧实现把 402 算进来，导致账号能登 DSM
+  // 但没开 Surveillance Station 权限时，Camera/List 一返回 402 就被踢回登录页，
+  // 表现即「偶尔登录成功立马又回到登录页」。
   bool get needsReLogin =>
       code == SynoErrorCode.sessionTimeout ||
       code == SynoErrorCode.duplicateLogin ||
-      code == SynoErrorCode.permissionDenied ||
       code == SynoErrorCode.invalidSession ||
       code == SynoErrorCode.portalAuthRequired ||
       code == SynoErrorCode.ipMismatch;
@@ -414,11 +424,10 @@ SynoException classifyHttpResponse(int statusCode, String body) {
       final code = int.tryParse(m.group(1)!) ?? 0;
       final e = SynoException.fromCode(code);
       if (e.needsReLogin) return e;
-      return SynoException(
-          code, 'NAS 返回业务错误码 $code（HTTP $statusCode）');
+      return SynoException(code, 'NAS 返回业务错误码 $code（HTTP $statusCode）');
     }
-    return SynoException(SynoErrorCode.unknown,
-        '服务器返回的不是有效 API 数据（HTTP $statusCode）');
+    return SynoException(
+        SynoErrorCode.unknown, '服务器返回的不是有效 API 数据（HTTP $statusCode）');
   }
   if (isHtml) {
     // 其它网页（404 / nginx 错误页 / SS Web UI）保留地址类建议，不误判会话。
@@ -507,12 +516,23 @@ class SessionExpiryGuard {
   SessionExpiryGuard();
 
   bool _suppressed = false;
+  DateTime? _graceUntil;
 
-  bool get suppressed => _suppressed;
+  /// 保护窗口 + 登录后的宽限期都算「抑制自动踢出」。
+  bool get suppressed =>
+      _suppressed ||
+      (_graceUntil != null && DateTime.now().isBefore(_graceUntil!));
 
   void suppress() => _suppressed = true;
 
   void release() => _suppressed = false;
+
+  /// 登录成功后给一段宽限期：主界面各页面的首次请求（实时画面、快照、
+  /// 事件列表、License）都在窗口外发起，其中任一端点偶发返回 465 / HTML
+  /// 都不该把刚登录成功的用户踢回登录页。宽限期结束后恢复正常判定。
+  void grantGrace(Duration d) => _graceUntil = DateTime.now().add(d);
+
+  void clearGrace() => _graceUntil = null;
 
   /// [detected] 是否检测到了会话失效信号，[hasSession] 当前是否存在会话，
   /// [authenticating] 是否正在执行登录请求（登录期间的 403/404 不是旧会话过期）。
@@ -521,7 +541,20 @@ class SessionExpiryGuard {
     required bool hasSession,
     bool authenticating = false,
   }) =>
-      detected && hasSession && !authenticating && !_suppressed;
+      detected && hasSession && !authenticating && !suppressed;
+}
+
+/// 把请求 URL 里的凭据类参数脱敏，供登录诊断面板展示 / 复制。
+/// 只保留可定位问题的信息（地址、端口、API、版本、账号），绝不回显密码、
+/// 验证码或设备令牌。
+String sanitizeApiUrl(String url) {
+  final uri = Uri.tryParse(url);
+  if (uri == null) return url;
+  final q = Map<String, String>.from(uri.queryParameters);
+  for (final k in const <String>['passwd', 'otp_code', 'device_id', '_sid']) {
+    if (q.containsKey(k)) q[k] = '***';
+  }
+  return uri.replace(queryParameters: q).toString();
 }
 
 /// 规范化两步验证输入：空白视为「未提供」。

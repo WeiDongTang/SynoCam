@@ -30,6 +30,12 @@ import '../../widgets/app_icon.dart';
 
 const List<double> _speeds = <double>[0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0];
 
+/// 回放画面所处阶段。旧实现只有 _error/_loading 两个布尔量，把「录像文件
+/// 下载中」「回放流已建立但尚未收到首帧」这两个中间态也当成失败渲染出错误
+/// 视图，于是画面出现前会闪过一段错误提示。现在中间态一律显示中性加载态，
+/// 只有两条路径都确定失败（failed）才展示错误。
+enum _PlaybackPhase { loading, video, streamPending, streamLive, failed }
+
 class PlaybackPage extends StatefulWidget {
   const PlaybackPage({
     super.key,
@@ -53,7 +59,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
   late DateTime _dayStart;
   List<Recording> _clips = <Recording>[];
 
-  bool _loading = true;
+  _PlaybackPhase _phase = _PlaybackPhase.loading;
   bool _videoReady = false;
   bool _playing = false;
   String? _error;
@@ -116,7 +122,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
 
   Future<void> _load(AppState state) async {
     setState(() {
-      _loading = true;
+      _phase = _PlaybackPhase.loading;
       _error = null;
       _diagnostic = '';
       _sourceLabel = '';
@@ -140,25 +146,26 @@ class _PlaybackPageState extends State<PlaybackPage> {
           _controller = c;
           _videoReady = true;
           _playing = true;
-          _loading = false;
+          _phase = _PlaybackPhase.video;
           _sourceLabel = 'NAS 录像文件（${rec.source}）· ${rec.contentType}';
         });
       }
       return;
     } catch (e) {
-      // 465 / 登录页 HTML：交回登录页重登，不继续尝试同样会 465 的回放流，
-      // 也不把整段 HTML 甩到画面区域。
+      // 465 / 登录页 HTML：交回登录页重登，不继续尝试同样会 465 的回放流。
       if (needsReLoginError(e)) {
         state.reportSessionExpired();
         if (mounted) {
           setState(() {
-            _loading = false;
+            _phase = _PlaybackPhase.failed;
             _error = '登录会话已过期，请重新登录';
             _diagnostic = '$e';
           });
         }
         return;
       }
+      // 路径 1 失败先只记诊断，绝不立刻渲染错误视图：后面还有回放流兜底。
+      // 这正是「回放视频闪过一段错误提示」的根因。
       _diagnostic = '录像文件回放失败：$e';
     }
 
@@ -169,25 +176,53 @@ class _PlaybackPageState extends State<PlaybackPage> {
       final url =
           state.liveStreamUrl(widget.camera, startTime: from, endTime: to);
       final client = MjpegStreamClient(url: url, cookie: state.cookieHeader);
+      var gotFirstFrame = false;
       _frameSub = client.frames().listen(
         (Uint8List frame) {
-          if (mounted) setState(() => _mjpegFrame = frame);
+          gotFirstFrame = true;
+          if (mounted) {
+            setState(() {
+              _mjpegFrame = frame;
+              _phase = _PlaybackPhase.streamLive;
+            });
+          }
         },
         onError: (Object e) {
+          // 已经出过画面：偶发断帧只记诊断，不弹错误、也不踢回登录页。
+          if (gotFirstFrame) {
+            _diagnostic = '回放流中断：$e';
+            return;
+          }
           if (needsReLoginError(e)) {
             state.reportSessionExpired();
             return;
           }
-          if (mounted) setState(() => _error = '回放流不可用：$e');
+          if (mounted) {
+            setState(() {
+              _error = '回放流不可用：$e';
+              _phase = _PlaybackPhase.failed;
+            });
+          }
         },
-        cancelOnError: true,
+        cancelOnError: false,
       );
       if (mounted) {
         setState(() {
-          _loading = false;
+          _phase = _PlaybackPhase.streamPending;
           _sourceLabel = 'MJPEG 回放流（startTime=$from, endTime=$to）';
         });
       }
+      // 首帧宽限期：流已建立但还没帧时保持中性「正在接收画面」，
+      // 10 秒仍无帧才判定失败，避免加载阶段闪错误。
+      unawaited(Future<void>.delayed(const Duration(seconds: 10)).then((_) {
+        if (!mounted || _phase != _PlaybackPhase.streamPending) return;
+        if (_mjpegFrame == null) {
+          setState(() {
+            _error ??= '回放流在 10 秒内未返回画面';
+            _phase = _PlaybackPhase.failed;
+          });
+        }
+      }));
       return;
     } catch (e) {
       _diagnostic += '\n回放流启动失败：$e';
@@ -195,7 +230,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
 
     if (mounted) {
       setState(() {
-        _loading = false;
+        _phase = _PlaybackPhase.failed;
         _error = '该 NAS 版本未提供可用的 App 内回放接口';
       });
     }
@@ -293,7 +328,8 @@ class _PlaybackPageState extends State<PlaybackPage> {
           _clipInfo(),
           const SizedBox(height: 12),
           if (_sourceLabel.isNotEmpty) _sourceCard(),
-          if (_error != null) _diagnosticCard(state),
+          // 加载 / 等待首帧期间不显示诊断卡片，避免真实录像能播时闪过错误提示。
+          if (_phase == _PlaybackPhase.failed) _diagnosticCard(state),
           const SizedBox(height: 14),
           _SectionLabel('今日录像片段（${_clips.length} 条）'),
           ..._clips.take(12).map((r) => _clipTile(state, r)),
@@ -310,27 +346,44 @@ class _PlaybackPageState extends State<PlaybackPage> {
           aspectRatio: 16 / 9,
           child: Container(
             color: const Color(0xFF101318),
-            child: _loading
-                ? const Center(
-                    child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      SizedBox(
-                          width: 26,
-                          height: 26,
-                          child: CircularProgressIndicator(strokeWidth: 2)),
-                      SizedBox(height: 10),
-                      Text('正在从 NAS 读取真实录像片段…',
-                          style:
-                              TextStyle(fontSize: 11, color: Colors.white54)),
-                    ],
-                  ))
-                : _videoReady && _controller != null
-                    ? VideoPlayer(_controller!)
-                    : _mjpegFrame != null
-                        ? Image.memory(_mjpegFrame!, fit: BoxFit.contain)
-                        : _errorView(state),
+            child: _phaseContent(state),
           ),
+        ),
+      );
+
+  /// 只有 failed 阶段才渲染错误视图；其余阶段一律是画面或中性加载态。
+  Widget _phaseContent(AppState state) {
+    switch (_phase) {
+      case _PlaybackPhase.loading:
+        return _busy('正在从 NAS 读取真实录像片段…');
+      case _PlaybackPhase.video:
+        final c = _controller;
+        return c != null ? VideoPlayer(c) : _busy('正在准备播放器…');
+      case _PlaybackPhase.streamPending:
+      case _PlaybackPhase.streamLive:
+        final frame = _mjpegFrame;
+        return frame != null
+            ? Image.memory(frame, fit: BoxFit.contain)
+            : _busy('正在接收回放画面…');
+      case _PlaybackPhase.failed:
+        return _errorView(state);
+    }
+    // 枚举已穷举，此分支理论不可达；保留以满足返回值类型检查。
+    return _busy('正在准备画面…');
+  }
+
+  Widget _busy(String text) => Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const SizedBox(
+                width: 26,
+                height: 26,
+                child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(height: 10),
+            Text(text,
+                style: const TextStyle(fontSize: 11, color: Colors.white54)),
+          ],
         ),
       );
 

@@ -31,7 +31,8 @@ ANDROID_ICON_DIR = NATIVE / "android_launcher"
 
 # ── iOS Info.plist 需要补齐的权限与用途说明 ──────────────────────────────
 IOS_PLIST_KEYS = {
-    "CFBundleDisplayName": "群晖监控",
+    # 应用显示名称：按要求改回之前的英文名称。
+    "CFBundleDisplayName": "SynoCam",
     # iOS 13+ 访问局域网设备时的用途说明（自有 NAS 多为局域网 / DDNS 回环）。
     "NSLocalNetworkUsageDescription":
         "用于发现并连接局域网内的群晖 NAS 与 Surveillance Station 摄像头。",
@@ -263,6 +264,9 @@ def apply_android(root: Path) -> None:
     if not manifest.is_file():
         die("未找到 %s" % manifest)
     text = manifest.read_text(encoding="utf-8")
+    # 与 iOS 一致：主屏幕/应用列表里显示英文名称 SynoCam。
+    text = re.sub(r'android:label="[^"]*"',
+                  'android:label="SynoCam"', text, count=1)
     additions = []
     for name, max_sdk in ANDROID_PERMISSIONS:
         if name in text:
@@ -307,6 +311,8 @@ def verify(root: Path, platform: str) -> None:
         for key in IOS_PLIST_KEYS:
             if key not in info:
                 problems.append("Info.plist 缺少 " + key)
+        if info.get("CFBundleDisplayName") != "SynoCam":
+            problems.append("CFBundleDisplayName 不是 SynoCam")
         if "NSAllowsLocalNetworking" not in (info.get("NSAppTransportSecurity") or {}):
             problems.append("Info.plist 缺少 NSAllowsLocalNetworking")
         delegate = (root / "ios" / "Runner" / "AppDelegate.swift").read_text(encoding="utf-8")
@@ -323,6 +329,8 @@ def verify(root: Path, platform: str) -> None:
         for name, _ in ANDROID_PERMISSIONS:
             if name not in manifest:
                 problems.append("AndroidManifest 缺少 " + name)
+        if 'android:label="SynoCam"' not in manifest:
+            problems.append("AndroidManifest 应用名称不是 SynoCam")
         main_activity = next(
             (root / "android" / "app" / "src" / "main").rglob("MainActivity.kt"), None)
         if main_activity is None or "POST_NOTIFICATIONS" not in main_activity.read_text(encoding="utf-8"):

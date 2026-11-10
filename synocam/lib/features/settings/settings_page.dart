@@ -325,7 +325,8 @@ class SettingsPage extends StatelessWidget {
                       Text(p.label,
                           style: TextStyle(
                               fontSize: 11,
-                              color: granted ? AppColors.green : AppColors.sub)),
+                              color:
+                                  granted ? AppColors.green : AppColors.sub)),
                     ],
                   ),
                 ),

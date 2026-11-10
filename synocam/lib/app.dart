@@ -18,7 +18,7 @@ class SynoCamApp extends StatelessWidget {
         // 回放 / 单画面 / 编辑等所有 push 上去的二级页面，避免用户仍停留在
         // 报 465 的页面而看不到重新登录入口。
         key: ValueKey<String>(rootState.isLoggedIn ? 'shell' : 'login'),
-        title: 'SynoCam · 群晖监控',
+        title: 'SynoCam',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.light(),
         darkTheme: AppTheme.dark(),

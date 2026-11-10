@@ -13,6 +13,7 @@ import '../../core/config/app_config.dart';
 import '../../core/network/syno_api.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
+import '../../core/utils/launcher.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
 
@@ -103,20 +104,22 @@ class _LoginPageState extends State<LoginPage> {
     try {
       final otp = normalizeOtp(_otp.text);
       await state.login(
-            host: _host.text,
-            account: _account.text,
-            password: _password.text,
-            https: _https,
-            port: _effectivePort(),
-            // 信任此设备后验证码可留空：靠保存的 did 免验证；若 NAS 仍要求，
-            // 服务端返回 403 会自动展开验证码输入框，不会卡住登录。
-            otpCode: _twoFactor ? otp : null,
-            enableDeviceToken: _twoFactor && _trustDevice,
-            deviceName: 'SynoCam iOS',
-            remember: _remember,
-          );
+        host: _host.text,
+        account: _account.text,
+        password: _password.text,
+        https: _https,
+        port: _effectivePort(),
+        // 信任此设备后验证码可留空：靠保存的 did 免验证；若 NAS 仍要求，
+        // 服务端返回 403 会自动展开验证码输入框，不会卡住登录。
+        otpCode: _twoFactor ? otp : null,
+        enableDeviceToken: _twoFactor && _trustDevice,
+        deviceName: 'SynoCam iOS',
+        remember: _remember,
+      );
     } on SynoException catch (e) {
       if (e.needsOtp) {
+        // 登录成功会立刻切到主界面并 dispose 本页，异步回调里必须先判 mounted。
+        if (!mounted) return;
         // 服务端要求两步验证：自动展开 OTP 框并聚焦，给出针对性引导。
         setState(() {
           _twoFactor = true;
@@ -163,7 +166,9 @@ class _LoginPageState extends State<LoginPage> {
                     hint: 'nas.example.com 或 192.168.1.10',
                     validator: (v) =>
                         (v == null || v.trim().isEmpty) ? '请输入 NAS 地址' : null,
+                    onChanged: (_) => setState(() {}),
                   ),
+                  _addressHint(),
                   const SizedBox(height: 14),
                   Row(
                     children: <Widget>[
@@ -245,6 +250,7 @@ class _LoginPageState extends State<LoginPage> {
                   // 错误横幅必须始终显示。旧实现用 && !_twoFactor 把 2FA
                   // 开启时的所有登录失败都吞掉了，用户点登录看不到任何反馈。
                   if (_error != null) _errorBanner(_error!),
+                  if (_error != null) _diagnosticTile(),
                   const SizedBox(height: 18),
                   SizedBox(
                     height: 52,
@@ -307,9 +313,10 @@ class _LoginPageState extends State<LoginPage> {
   Widget _brand() => Column(
         children: <Widget>[
           Container(
-            width: 72,
-            height: 72,
+            width: 64,
+            height: 64,
             decoration: BoxDecoration(
+              color: AppColors.blue,
               borderRadius: BorderRadius.circular(18),
               boxShadow: <BoxShadow>[
                 BoxShadow(
@@ -318,23 +325,94 @@ class _LoginPageState extends State<LoginPage> {
                     offset: const Offset(0, 8)),
               ],
             ),
-            // 与 iOS / Android 主屏幕图标同一份素材，保持品牌一致。
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(18),
-              child: Image.asset(
-                'assets/brand/app_icon_1024.png',
-                fit: BoxFit.cover,
-              ),
-            ),
+            // 换回「更换图标前」登录页顶部那枚图标：蓝色圆角块 + 白色摄像机。
+            // 主屏幕 App 图标已同步改为同一视觉（蓝底 + 白色摄像机）。
+            child:
+                const AppIcon(AppIcons.cameras, size: 32, color: Colors.white),
           ),
           const SizedBox(height: 16),
-          const Text('群晖监控',
-              style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700)),
+          Text(AppConfig.appName,
+              style:
+                  const TextStyle(fontSize: 26, fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
-          Text('SynoCam · ${AppConfig.appName}',
+          const Text('Surveillance Station',
               style: TextStyle(fontSize: 12, color: AppColors.sub)),
         ],
       );
+
+  /// 地址形态是最常见的登录失败原因：QuickConnect ID 无法被 Web API 直连、
+  /// 端口与 HTTPS 开关错配。这里在输入时即时给出可执行的提示。
+  Widget _addressHint() {
+    final h = _host.text.trim().toLowerCase();
+    if (h.isEmpty) return const SizedBox.shrink();
+    final noScheme = h.replaceFirst('http://', '').replaceFirst('https://', '');
+    String? msg;
+    if (RegExp(r'^[a-z0-9_-]{4,30}$').hasMatch(noScheme) &&
+        !noScheme.contains('.') &&
+        !noScheme.contains(':')) {
+      msg = '这看起来是 QuickConnect ID。Web API 无法直连 QuickConnect 中继，'
+          '请改用 DDNS 域名或内网 IP（例如 192.168.1.10:5000）。';
+    } else if (noScheme.contains(':5000') &&
+        _https &&
+        !h.startsWith('http://')) {
+      msg = '5000 是 HTTP 端口：请关闭「使用 HTTPS」，或在地址前加 http://。';
+    } else if (noScheme.contains(':5001') &&
+        !_https &&
+        !h.startsWith('https://')) {
+      msg = '5001 是 HTTPS 端口：请开启「使用 HTTPS」，或在地址前加 https://。';
+    }
+    if (msg == null) return const SizedBox.shrink();
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.blueSoft,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const AppIcon(AppIcons.info, size: 16, color: AppColors.blue),
+          const SizedBox(width: 8),
+          Expanded(
+              child: Text(msg,
+                  style: const TextStyle(fontSize: 11, color: AppColors.blue))),
+        ],
+      ),
+    );
+  }
+
+  /// 登录失败时给出真实请求与 NAS 响应（脱敏），一键复制用于反馈定位。
+  Widget _diagnosticTile() {
+    final state = context.watch<AppState>();
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          OutlinedButton.icon(
+            onPressed: () => copyToClipboard(context, state.loginDiagnostic,
+                label: '登录诊断已复制'),
+            icon: const AppIcon(AppIcons.info, size: 15),
+            label:
+                const Text('复制登录诊断（反馈时附上）', style: TextStyle(fontSize: 11.5)),
+          ),
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('查看本次登录的真实请求与 NAS 响应',
+                style: TextStyle(fontSize: 11.5)),
+            children: <Widget>[
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: SelectableText(state.loginDiagnostic,
+                    style: TextStyle(fontSize: 10, color: AppColors.sub)),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _field({
     required TextEditingController controller,
@@ -344,10 +422,12 @@ class _LoginPageState extends State<LoginPage> {
     bool obscure = false,
     Widget? suffix,
     TextInputType? keyboard,
+    ValueChanged<String>? onChanged,
     String? Function(String?)? validator,
   }) =>
       TextFormField(
         controller: controller,
+        onChanged: onChanged,
         obscureText: obscure,
         keyboardType: keyboard,
         validator: validator,

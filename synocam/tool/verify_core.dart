@@ -443,8 +443,8 @@ Future<void> main() async {
       'HTTP 465 + 登录页 HTML → 会话失效（不再降级错误码 100）');
   check(classifyHttpResponse(200, loginHtml).needsReLogin,
       'HTTP 200 + 登录页 HTML（门户重定向）→ 会话失效');
-  final json465 = classifyHttpResponse(
-      465, '{"success":false,"error":{"code":400}}');
+  final json465 =
+      classifyHttpResponse(465, '{"success":false,"error":{"code":400}}');
   check(!json465.needsReLogin && json465.code == 400,
       '465 + JSON 业务错误 → 流端点问题，不误判会话失效（修复登录后被踢出）');
   final notFound = classifyHttpResponse(
@@ -464,8 +464,7 @@ Future<void> main() async {
       '200 + 普通 HTML（含 viewport / width=device-width）不误判会话失效');
   check(classifyHttpResponse(200, ssWebUi).message.contains('地址/端口/HTTPS'),
       '普通 HTML 保留地址/端口/HTTPS 类建议');
-  check(classifyHttpResponse(465, '').needsReLogin,
-      '465 + 空 body（门户拦截）判会话失效');
+  check(classifyHttpResponse(465, '').needsReLogin, '465 + 空 body（门户拦截）判会话失效');
   check(!classifyHttpResponse(465, '\xff\xd8\xff\xe0binary').needsReLogin,
       '465 + 二进制乱码不误判会话失效');
   check(!classifyFailure('NAS 返回业务错误码 400（HTTP 465）').needsReLogin,
@@ -473,23 +472,51 @@ Future<void> main() async {
 
   print('── 登录保护窗口（刚登录不被辅助端点踢回登录页）──');
   final guard = SessionExpiryGuard();
-  check(guard.shouldExpire(detected: true, hasSession: true),
-      '默认允许真实会话失效触发重登');
+  check(guard.shouldExpire(detected: true, hasSession: true), '默认允许真实会话失效触发重登');
   guard.suppress();
   check(guard.suppressed, 'suppress() 生效');
   check(!guard.shouldExpire(detected: true, hasSession: true),
       '登录后首次刷新保护窗口内不踢出（核心修复）');
-  check(!guard.shouldExpire(
-      detected: true, hasSession: true, authenticating: true),
+  check(
+      !guard.shouldExpire(
+          detected: true, hasSession: true, authenticating: true),
       '登录请求期间不踢出');
   guard.release();
-  check(!guard.suppressed &&
-      guard.shouldExpire(detected: true, hasSession: true),
+  check(
+      !guard.suppressed && guard.shouldExpire(detected: true, hasSession: true),
       'release() 后恢复正常判定');
-  check(!guard.shouldExpire(detected: true, hasSession: false),
-      '无会话时不触发重登');
-  check(!guard.shouldExpire(detected: false, hasSession: true),
-      '未检测到失效信号时不触发重登');
+  check(!guard.shouldExpire(detected: true, hasSession: false), '无会话时不触发重登');
+  check(
+      !guard.shouldExpire(detected: false, hasSession: true), '未检测到失效信号时不触发重登');
+
+  print('── 本轮修复：端口错配 / 402 权限 / 登录宽限期 / 诊断脱敏 ──');
+  final mixed = buildSynoUrl(
+    host: '192.168.1.10:5000',
+    cgi: SynoEndpoints.authCgi,
+    https: true,
+    port: 5000,
+    query: <String, String?>{'api': SynoApi.auth},
+  );
+  check(mixed.startsWith('https://192.168.1.10:5000/'), '地址带端口 + 显式端口时只拼一个端口');
+  check(!mixed.contains('5000:5000'), 'host 内嵌端口被剥离，不再出现重复端口');
+  check(!SynoException.fromCode(402).needsReLogin,
+      '402 权限不足不再误判为会话失效（核心：不再踢回登录页）');
+  check(!SynoException.fromCode(105).needsReLogin, '105 无权限不触发重登');
+  final g2 = SessionExpiryGuard();
+  g2.grantGrace(const Duration(minutes: 1));
+  check(g2.suppressed, '登录后宽限期内抑制自动踢出');
+  check(!g2.shouldExpire(detected: true, hasSession: true),
+      '宽限期内首屏请求偶发 465 不踢回登录页');
+  g2.clearGrace();
+  check(!g2.suppressed && g2.shouldExpire(detected: true, hasSession: true),
+      'clearGrace 后恢复正常判定');
+  final safe = sanitizeApiUrl(
+      'http://192.168.1.10:5000/webapi/auth.cgi?api=SYNO.API.Auth'
+      '&method=login&account=admin&passwd=p%40ss&otp_code=123456&_sid=ABC');
+  check(
+      safe.contains('passwd=') && !safe.contains('p%40ss'), '登录诊断保留参数名但不回显密码');
+  check(!safe.contains('123456') && !safe.contains('ABC'), '登录诊断不回显验证码与 SID');
+  check(safe.contains('account=admin'), '登录诊断保留可定位的账号与地址');
 
   print('── 两步验证输入（会话过期预填 2FA 不阻塞登录）──');
   check(normalizeOtp(null) == null, 'null 视为未提供验证码');

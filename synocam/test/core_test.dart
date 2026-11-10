@@ -431,8 +431,8 @@ void main() {
       expect(classifyHttpResponse(200, html).needsReLogin, isTrue);
       expect(classifyHttpResponse(465, html).code,
           SynoErrorCode.portalAuthRequired);
-      final json465 = classifyHttpResponse(
-          465, '{"success":false,"error":{"code":400}}');
+      final json465 =
+          classifyHttpResponse(465, '{"success":false,"error":{"code":400}}');
       expect(json465.needsReLogin, isFalse);
       expect(json465.code, 400);
       final notFound = classifyHttpResponse(
@@ -464,8 +464,8 @@ void main() {
       expect(classifyHttpResponse(465, '').needsReLogin, isTrue);
       expect(classifyHttpResponse(465, '\xff\xd8\xff\xe0binary').needsReLogin,
           isFalse);
-      expect(classifyFailure('NAS 返回业务错误码 400（HTTP 465）').needsReLogin,
-          isFalse);
+      expect(
+          classifyFailure('NAS 返回业务错误码 400（HTTP 465）').needsReLogin, isFalse);
     });
 
     test('登录保护窗口：suppress 期间不踢出刚登录的会话', () {
@@ -483,6 +483,35 @@ void main() {
       expect(guard.shouldExpire(detected: true, hasSession: true), isTrue);
       expect(guard.shouldExpire(detected: true, hasSession: false), isFalse);
       expect(guard.shouldExpire(detected: false, hasSession: true), isFalse);
+    });
+
+    test('地址端口错配 / 402 权限 / 登录宽限期 / 诊断脱敏', () {
+      final mixed = buildSynoUrl(
+        host: '192.168.1.10:5000',
+        cgi: SynoEndpoints.authCgi,
+        https: true,
+        port: 5000,
+        query: <String, String?>{'api': SynoApi.auth},
+      );
+      expect(mixed.startsWith('https://192.168.1.10:5000/'), isTrue);
+      expect(mixed.contains('5000:5000'), isFalse);
+      expect(SynoException.fromCode(402).needsReLogin, isFalse);
+      expect(SynoException.fromCode(105).needsReLogin, isFalse);
+      final g = SessionExpiryGuard();
+      g.grantGrace(const Duration(minutes: 1));
+      expect(g.suppressed, isTrue);
+      expect(g.shouldExpire(detected: true, hasSession: true), isFalse);
+      g.clearGrace();
+      expect(g.suppressed, isFalse);
+      expect(g.shouldExpire(detected: true, hasSession: true), isTrue);
+      final safe = sanitizeApiUrl(
+          'http://192.168.1.10:5000/webapi/auth.cgi?account=admin'
+          '&passwd=p%40ss&otp_code=123456&_sid=ABC');
+      expect(safe.contains('p%40ss'), isFalse);
+      expect(safe.contains('123456'), isFalse);
+      expect(safe.contains('ABC'), isFalse);
+      expect(safe.contains('account=admin'), isTrue);
+      expect(safe.contains('passwd='), isTrue);
     });
 
     test('两步验证输入留空不再阻塞登录提交', () {

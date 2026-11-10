@@ -76,6 +76,10 @@ class AppState extends ChangeNotifier {
   /// SYNO.API.Info 的真实探测结果（失败时含原因），供设置页展示。
   String get discoverDiagnostic => _client.discoverDiagnostic;
 
+  /// 最近一次登录的真实技术诊断（脱敏 URL / HTTP 状态 / NAS 响应 / 耗时），
+  /// 登录页可展开并复制，用于定位外网、QuickConnect、证书、端口类问题。
+  String get loginDiagnostic => _client.loginDiagnostic;
+
   /// 登录成功后首次数据刷新的真实诊断（辅助端点失败不阻断登录）。
   String? _loginRefreshDiagnostic;
   String? get loginRefreshDiagnostic => _loginRefreshDiagnostic;
@@ -257,9 +261,19 @@ class AppState extends ChangeNotifier {
       trustDevice: enableDeviceToken || (previous?.trustDevice ?? false),
     ));
     _loginRefreshDiagnostic = null;
-    // 关键修复：登录成功后的一批数据刷新绝不能因某个辅助端点返回 HTML/465
-    // 就触发「会话失效」把用户踢回登录页。保护窗口内抑制自动踢出，且每个
-    // 刷新单独兜底——刷新失败只记录真实诊断，用户停留在主界面可手动重试。
+    // 修复「点登录没反应」：旧实现要等下面三个串行刷新（每个都可能 12~20s
+    // 超时）全部跑完才 notifyListeners()，用户只见按钮一直转圈。现在登录
+    // 成功立即切主界面，数据刷新放到后台异步进行。
+    // 修复「登录成功立马回登录页」：给首屏请求一段宽限期，主界面各页面
+    // 同时发起的实时画面 / 快照 / 事件请求里哪怕偶发 465 也不自动踢出。
+    _client.sessionGuard.grantGrace(const Duration(seconds: 30));
+    notifyListeners();
+    unawaited(_refreshAfterLogin());
+  }
+
+  /// 登录后的数据刷新：完全不阻塞登录，且整个过程抑制自动踢出；
+  /// 单个刷新失败只记录真实诊断，用户留在主界面可手动重试。
+  Future<void> _refreshAfterLogin() async {
     _client.sessionGuard.suppress();
     try {
       await _safeRefresh(refreshCameras, '摄像机列表');
@@ -272,7 +286,8 @@ class AppState extends ChangeNotifier {
   }
 
   /// 尽力而为的刷新：失败保留真实诊断，不向上抛出、不影响已建立的会话。
-  Future<void> _safeRefresh(Future<void> Function() action, String label) async {
+  Future<void> _safeRefresh(
+      Future<void> Function() action, String label) async {
     try {
       await action();
     } catch (e) {

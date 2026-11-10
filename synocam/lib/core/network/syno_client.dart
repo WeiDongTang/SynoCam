@@ -34,7 +34,9 @@ class SynoClient {
     // 统一为所有请求注入会话 Cookie 与 UA：流端点依赖 Cookie，JSON API 也兼容。
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (RequestOptions o, RequestInterceptorHandler h) {
-        final c = _cookie;
+        // 登录请求绝不能带上一轮的旧 SID Cookie：会话失效后重登时若带着
+        // 废弃 Cookie，DSM 门户会直接回 465 登录页，表现为「登录没反应」。
+        final c = _authenticating ? '' : _cookie;
         if (c.isNotEmpty) o.headers['Cookie'] = c;
         o.headers.putIfAbsent('User-Agent', () => 'SynoCam/1.0');
         h.next(o);
@@ -53,6 +55,12 @@ class SynoClient {
   /// SYNO.API.Info 探测的真实结果（失败时保留原因，供设置页展示）。
   String _discoverDiagnostic = '尚未探测';
   String get discoverDiagnostic => _discoverDiagnostic;
+
+  /// 最近一次登录的真实技术诊断：脱敏后的请求 URL、HTTP 状态、NAS 响应摘要、
+  /// 错误码与耗时。登录页可展开并一键复制，用于定位外网 / QuickConnect /
+  /// 证书 / 端口这类「本机无法复现」的连接问题。绝不含密码或验证码。
+  String _loginDiagnostic = '尚未发起登录';
+  String get loginDiagnostic => _loginDiagnostic;
 
   _SnapshotRecipe? _snapshotRecipe;
 
@@ -209,8 +217,15 @@ class SynoClient {
     );
 
     _authenticating = true;
+    final sw = Stopwatch()..start();
+    var httpStatus = 0;
+    dynamic rawBody;
     try {
-      final data = (await _getRaw(url)).requireData();
+      final resp = await _getRaw(url, capture: (int status, dynamic body) {
+        httpStatus = status;
+        rawBody = body;
+      });
+      final data = resp.requireData();
       final sid = data['sid'] as String?;
       if (sid == null || sid.isEmpty) {
         throw SynoException(SynoErrorCode.unknown, '登录成功但未返回 SID');
@@ -224,15 +239,61 @@ class SynoClient {
         did: data['did'] as String?,
       );
       _snapshotRecipe = null;
+      _loginDiagnostic = _formatLoginDiagnostic(
+        url: url,
+        status: httpStatus,
+        body: rawBody,
+        elapsed: sw.elapsedMilliseconds,
+        note: '登录成功，已取得 SID',
+      );
       try {
         await discoverApis();
       } catch (e) {
         _discoverDiagnostic = 'SYNO.API.Info 读取失败：$e（已按默认版本继续）';
       }
       return _session!;
+    } on SynoException catch (e) {
+      _loginDiagnostic = _formatLoginDiagnostic(
+        url: url,
+        status: httpStatus,
+        body: rawBody,
+        elapsed: sw.elapsedMilliseconds,
+        note: 'DSM 返回错误码 ${e.code}：${e.message}',
+      );
+      rethrow;
+    } catch (e) {
+      _loginDiagnostic = _formatLoginDiagnostic(
+        url: url,
+        status: httpStatus,
+        body: rawBody,
+        elapsed: sw.elapsedMilliseconds,
+        note: '请求异常：$e',
+      );
+      rethrow;
     } finally {
       _authenticating = false;
     }
+  }
+
+  String _formatLoginDiagnostic({
+    required String url,
+    required int status,
+    required dynamic body,
+    required int elapsed,
+    required String note,
+  }) {
+    final text = body == null
+        ? ''
+        : body.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+    final snippet = text.isEmpty
+        ? '(空响应)'
+        : (text.length > 220 ? '${text.substring(0, 220)}…' : text);
+    return <String>[
+      note,
+      '耗时 ${elapsed}ms · HTTP ${status > 0 ? status : '未收到响应'}',
+      '请求：${sanitizeApiUrl(url)}',
+      'NAS 响应：$snippet',
+    ].join('\n');
   }
 
   Future<void> logout() async {
@@ -886,10 +947,13 @@ class SynoClient {
     throw _classified(status, body == null ? '' : body.toString());
   }
 
-  Future<SynoResponse> _getRaw(String url) async {
+  Future<SynoResponse> _getRaw(String url,
+      {void Function(int status, dynamic body)? capture}) async {
     try {
       final r = await _dio.get<dynamic>(url);
-      final resp = _parseBody(r.data, r.statusCode ?? 0);
+      final status = r.statusCode ?? 0;
+      capture?.call(status, r.data);
+      final resp = _parseBody(r.data, status);
       // JSON 形式的会话失效（106/119/150）同样要触发统一恢复闭环。
       final code = resp.error?.code;
       if (code != null && SynoException.fromCode(code).needsReLogin) {
@@ -897,6 +961,13 @@ class SynoClient {
       }
       return resp;
     } on DioException catch (e) {
+      capture?.call(e.response?.statusCode ?? 0, e.response?.data);
+      final d = e.response?.data;
+      final raw =
+          d == null ? '' : d.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+      final detail = raw.isEmpty
+          ? ''
+          : ' · NAS 响应：${raw.length > 120 ? '${raw.substring(0, 120)}…' : raw}';
       if (e.type == DioExceptionType.connectionTimeout ||
           e.type == DioExceptionType.sendTimeout ||
           e.type == DioExceptionType.receiveTimeout) {
@@ -904,9 +975,9 @@ class SynoClient {
       }
       if (e.type == DioExceptionType.badCertificate) {
         throw SynoException(SynoErrorCode.unknown,
-            'HTTPS 证书不受信任。若 NAS 使用自签证书，请在「设置」开启「信任自签名证书」');
+            'HTTPS 证书不受信任。若 NAS 使用自签证书，请开启「信任自签名 HTTPS 证书」');
       }
-      throw SynoException(SynoErrorCode.unknown, '网络错误：${e.message}');
+      throw SynoException(SynoErrorCode.unknown, '网络错误：${e.message}$detail');
     }
   }
 }

@@ -1,7 +1,7 @@
 {
   "@@locale": "zh",
 
-  "appName": "群晖监控",
+  "appName": "SynoCam",
   "@appName": { "description": "应用名称" },
   "login": "登录",
   "live": "实时画面",
