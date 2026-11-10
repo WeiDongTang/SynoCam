@@ -179,8 +179,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
         onTap: () async {
           await state.markEventRead(e.id);
         },
-        leading: BadgeIcon(meta.$1,
-            tone: read ? IconTone.neutral : meta.$2,
+        leading: BadgeIcon(meta.icon,
+            tone: read ? IconTone.neutral : meta.tone,
             boxSize: 38,
             iconSize: 18),
         title: Text(e.title,
@@ -203,18 +203,18 @@ class _NotificationsPageState extends State<NotificationsPage> {
   String _time(DateTime t) =>
       '${t.month}/${t.day} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
-  (IconData, IconTone) _meta(String type) {
+  _Meta _meta(String type) {
     switch (type) {
       case 'motion':
-        return (AppIcons.alert, IconTone.red);
+        return const _Meta(AppIcons.alert, IconTone.red);
       case 'alarm':
-        return (AppIcons.door, IconTone.amber);
+        return const _Meta(AppIcons.door, IconTone.amber);
       case 'manual':
-        return (AppIcons.snapshot, IconTone.blue);
+        return const _Meta(AppIcons.snapshot, IconTone.blue);
       case 'external':
-        return (AppIcons.cpu, IconTone.blue);
+        return const _Meta(AppIcons.cpu, IconTone.blue);
       default:
-        return (AppIcons.recordings, IconTone.blue);
+        return const _Meta(AppIcons.recordings, IconTone.blue);
     }
   }
 
@@ -297,4 +297,11 @@ class _Header extends StatelessWidget {
           ],
         ),
       );
+}
+
+/// 事件图标与色调（避免使用 Dart 3 record，保证在 Dart 2.17+ 均可解析）。
+class _Meta {
+  const _Meta(this.icon, this.tone);
+  final IconData icon;
+  final IconTone tone;
 }

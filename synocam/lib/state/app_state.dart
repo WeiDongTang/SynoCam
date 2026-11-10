@@ -287,10 +287,23 @@ class AppState extends ChangeNotifier {
   String snapshotUrl(Camera c, {int? nonce}) =>
       _cameras.snapshotUrl(c.id, nonce: nonce);
 
-  String liveStreamUrl(Camera c) => _cameras.liveStreamUrl(c);
+  /// 真实快照字节：走 Dio + Cookie 链路，替代会返回 465 的 Image.network。
+  Future<List<int>> snapshotBytes(Camera c) => _cameras.snapshotBytes(c.id);
+  Future<List<int>> takeSnapshot(Camera c) => _cameras.snapshotBytes(c.id);
+
+  String liveStreamUrl(Camera c, {int? startTime, int? endTime}) =>
+      _cameras.liveStreamUrl(c, startTime: startTime, endTime: endTime);
   String rtspUrl(Camera c) => _cameras.rtspUrl(c);
   String webUiUrl() => _cameras.webUiUrl();
-  Future<List<int>> takeSnapshot(Camera c) => _cameras.snapshot(c.id);
+
+  /// 供 MJPEG 流客户端使用的会话 Cookie，以及连接诊断信息。
+  String get cookieHeader => _cameras.cookieHeader;
+  String get mediaDiagnostic => _cameras.mediaDiagnostic;
+  Future<String> testSnapshot(Camera c) => _cameras.testSnapshot(c.id);
+
+  /// 下载真实录像片段，供 App 内播放器读取（默认不再跳浏览器）。
+  Future<RecordingFile> downloadRecording(Recording r) =>
+      _media.downloadRecording(r);
 
   // ── PTZ 门面 ──
   Future<void> ptzMove(int cameraId, String direction) =>
@@ -313,6 +326,12 @@ class AppState extends ChangeNotifier {
 
   Future<void> setPollSeconds(int v) async {
     await _prefs.setPollSeconds(v);
+    notifyListeners();
+  }
+
+  /// 切换「MJPEG 连续流 / 快照轮询」：所有预览组件会立即按新配置重启。
+  Future<void> setStreamMode(bool v) async {
+    await _prefs.setStreamMode(v);
     notifyListeners();
   }
 

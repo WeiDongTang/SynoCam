@@ -2,6 +2,8 @@
 // 真实数据源为 SYNO.SurveillanceStation.Event / Query 返回的 data.events[]：
 // id / cameraId / startTime / stopTime / status / mode / videoCodec ...
 // 不再有任何静态演示数据。
+import 'dart:convert';
+
 class Recording {
   const Recording({
     required this.id,
@@ -26,6 +28,9 @@ class Recording {
   final bool recording;
   final String eventType;
   final String codec;
+
+  DateTime get endTime =>
+      startTime.add(Duration(seconds: durationSeconds > 0 ? durationSeconds : 1));
 
   String get durationLabel {
     if (recording) return '录制中';
@@ -80,6 +85,99 @@ class Recording {
     };
     return labels[mode] ?? '录制事件';
   }
+}
+
+/// 从 NAS 下载到的真实录像文件（供 App 内播放器读取）。
+class RecordingFile {
+  const RecordingFile({
+    required this.bytes,
+    required this.extension,
+    required this.source,
+    this.contentType = '',
+  });
+
+  final List<int> bytes;
+  final String extension;
+  final String source;
+  final String contentType;
+}
+
+/// 媒体字节识别：按文件头判断真实图片/录像，防止把 DSM 的
+/// {"error":{"code":400}}（HTTP 200 但内容是错误 JSON）误当画面或录像片段。
+/// 纯 Dart，供 SynoClient 与核心自检（verify_core.dart）共用。
+class MediaBytes {
+  MediaBytes._();
+
+  /// JPEG（FF D8 FF）或 PNG（89 50 4E 47）。
+  static bool isImage(List<int> b) {
+    if (b.length < 4) return false;
+    if (b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) return true;
+    return b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47;
+  }
+
+  /// 从文件头推断容器扩展名（App 内播放器需按真实格式建临时文件）。
+  static String extensionFor(List<int> b) {
+    if (b.length >= 12) {
+      final s = latin1.decode(b.sublist(4, 12), allowInvalid: true);
+      if (s.startsWith('ftyp')) return '.mp4';
+    }
+    if (b.length >= 4 && b[0] == 0x1A && b[1] == 0x45) return '.mkv';
+    if (b.length >= 4 && b[0] == 0x52 && b[1] == 0x49) return '.avi';
+    return '.mp4';
+  }
+
+  /// 空响应或以 { 开头的 JSON 错误体不是媒体文件。
+  static bool looksLikeJsonError(List<int> b) {
+    if (b.isEmpty) return true;
+    final head = latin1.decode(b.take(64).toList(), allowInvalid: true).trim();
+    return head.startsWith('{');
+  }
+}
+
+/// 时间轴换算：把 24 小时映射到 [0,1]，并把拖动位置解析为真实时刻/片段。
+/// 纯 Dart，便于在无 Flutter SDK 的环境里做协议自检。
+class TimelineMath {
+  TimelineMath._();
+
+  static const int secondsPerDay = 86400;
+
+  static double fractionOf(DateTime t, DateTime dayStart) {
+    final s = t.difference(dayStart).inSeconds;
+    return (s / secondsPerDay).clamp(0.0, 1.0).toDouble();
+  }
+
+  static DateTime timeAt(double fraction, DateTime dayStart) => dayStart.add(
+      Duration(seconds: (fraction.clamp(0.0, 1.0) * secondsPerDay).round()));
+
+  /// 命中某个录像片段（含首尾）。
+  static Recording? clipAt(List<Recording> clips, DateTime t) {
+    for (final r in clips) {
+      if (!t.isBefore(r.startTime) && !t.isAfter(r.endTime)) return r;
+    }
+    return null;
+  }
+
+  /// 拖动时先尝试命中，未命中则取开始时间最接近的片段。
+  static Recording? nearestClip(List<Recording> clips, DateTime t) {
+    if (clips.isEmpty) return null;
+    final hit = clipAt(clips, t);
+    if (hit != null) return hit;
+    Recording? best;
+    var bestDiff = 1 << 62;
+    for (final r in clips) {
+      final d = r.startTime.difference(t).inSeconds.abs();
+      if (d < bestDiff) {
+        bestDiff = d;
+        best = r;
+      }
+    }
+    return best;
+  }
+
+  static String timeLabel(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:'
+      '${t.minute.toString().padLeft(2, '0')}:'
+      '${t.second.toString().padLeft(2, '0')}';
 }
 
 class SurveillanceEvent {

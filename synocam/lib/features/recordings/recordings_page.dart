@@ -1,15 +1,17 @@
 // 录像：真实 SYNO.SurveillanceStation.Event / Query 数据。
-// 支持真实筛选、按真实日期分组、真实锁定/解锁/删除、用系统播放器打开真实录像流。
-// 无任何静态演示数据：加载失败显示 DSM 错误码，空结果显示真实空态。
+// 点击片段默认在 App 内 PlaybackPage 回放（可拖动时间轴 / 倍速），
+// 不再把 API 地址直接丢给浏览器；跳转类入口都改为用户主动操作。
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
 import '../../core/utils/launcher.dart';
+import '../../data/models/camera.dart';
 import '../../data/models/media.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
+import '../playback/playback_page.dart';
 
 class RecordingsPage extends StatefulWidget {
   const RecordingsPage({super.key});
@@ -42,6 +44,20 @@ class _RecordingsPageState extends State<RecordingsPage> {
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  void _openPlayback(BuildContext context, AppState state, Recording r) {
+    Camera? found;
+    for (final c in state.cameras) {
+      if (c.id == r.cameraId) {
+        found = c;
+        break;
+      }
+    }
+    final Camera cam = found ?? Camera(id: r.cameraId, name: r.cameraName);
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => PlaybackPage(recording: r, camera: cam),
+    ));
   }
 
   List<Recording> _applyFilter(List<Recording> all) {
@@ -135,7 +151,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
             if (_tab == 0) _filterChips(),
             Expanded(
               child: _tab == 1
-                  ? _snapshotGuide(context, state)
+                  ? _snapshotGuide()
                   : _body(context, state, recs),
             ),
           ],
@@ -190,7 +206,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
       );
     }
 
-    // 按真实日期分组。
     final groups = <String, List<Recording>>{};
     for (final r in recs) {
       groups.putIfAbsent(r.dateLabel, () => <Recording>[]).add(r);
@@ -231,21 +246,23 @@ class _RecordingsPageState extends State<RecordingsPage> {
               style:
                   const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
           subtitle: Text(
-              '${r.startTime.hour.toString().padLeft(2, '0')}:${r.startTime.minute.toString().padLeft(2, '0')}'
-              ' · ${r.durationLabel}${r.locked ? ' · 已锁定' : ''}'
+              '${TimelineMath.timeLabel(r.startTime)} · ${r.durationLabel}'
+              '${r.locked ? ' · 已锁定' : ''}'
               '${r.codec.isEmpty ? '' : ' · ${r.codec}'}',
               style: TextStyle(fontSize: 10, color: AppColors.faint)),
           trailing: PopupMenuButton<String>(
             onSelected: (v) {
               switch (v) {
                 case 'play':
-                  openExternalUrl(
-                      context, state.recordingDownloadUrl(r),
-                      label: '录像片段');
+                  _openPlayback(context, state, r);
+                  break;
+                case 'external':
+                  openExternalUrl(context,
+                      state.recordingDownloadUrl(r), label: '录像片段');
                   break;
                 case 'copy':
-                  copyToClipboard(
-                      context, state.recordingDownloadUrl(r),
+                  copyToClipboard(context,
+                      state.recordingDownloadUrl(r),
                       label: '真实录像链接已复制');
                   break;
                 case 'lock':
@@ -258,9 +275,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
             },
             itemBuilder: (_) => <PopupMenuEntry<String>>[
               const PopupMenuItem<String>(
-                  value: 'play', child: Text('用系统播放器打开')),
+                  value: 'play', child: Text('在 App 内回放')),
               const PopupMenuItem<String>(
                   value: 'copy', child: Text('复制真实下载链接')),
+              const PopupMenuItem<String>(
+                  value: 'external', child: Text('用系统播放器打开')),
               PopupMenuItem<String>(
                   value: 'lock',
                   child: Text(r.locked ? '解锁片段' : '锁定片段')),
@@ -268,14 +287,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   value: 'delete', child: Text('从 NAS 删除')),
             ],
           ),
-          onTap: () => openExternalUrl(
-              context, state.recordingDownloadUrl(r),
-              label: '录像片段'),
+          onTap: () => _openPlayback(context, state, r),
         ),
       );
 
   /// 快照不是 SS 的历史列表，而是即时抓图；明确引导到真实入口。
-  Widget _snapshotGuide(BuildContext context, AppState state) => Center(
+  Widget _snapshotGuide() => Center(
         child: Padding(
           padding: const EdgeInsets.all(28),
           child: Column(

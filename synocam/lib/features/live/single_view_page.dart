@@ -1,6 +1,5 @@
-// 单画面：真实实时预览 + 真实快照 + 真实 PTZ/预置位/巡逻 + 真实录像时间轴。
-// 所有数据来自 NAS；SS Web API 未提供的能力（双向对讲、音频监听、内嵌变速回放）
-// 明确标注不可用并引导到系统播放器 / SS 网页端，不做假交互。
+// 单画面：真实实时预览 + 真实快照 + 真实 PTZ/预置位/巡逻 + 可拖动录像时间轴。
+// 点击任意录制事件或拖动时间轴后，都在 App 内打开 PlaybackPage 回放，不再跳浏览器。
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -11,10 +10,12 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
 import '../../core/utils/launcher.dart';
 import '../../data/models/camera.dart';
+import '../../data/models/media.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
 import '../../widgets/live_snapshot.dart';
 import '../cameras/camera_edit_page.dart';
+import '../playback/playback_page.dart';
 
 class SingleViewPage extends StatefulWidget {
   const SingleViewPage({super.key, required this.camera});
@@ -27,6 +28,8 @@ class SingleViewPage extends StatefulWidget {
 
 class _SingleViewPageState extends State<SingleViewPage> {
   bool _busy = false;
+  double _scrubFraction = 0;
+  bool _scrubReady = false;
   List<Map<String, dynamic>> _presets = <Map<String, dynamic>>[];
 
   @override
@@ -101,7 +104,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
           _actions(context, state, cam),
           const SectionLabel('云台控制 · PTZ'),
           _ptz(context, state, cam),
-          const SectionLabel('今日录像（真实片段）'),
+          const SectionLabel('今日录像（可拖动时间轴回放）'),
           _timeline(context, state, cam),
           const SectionLabel('设备信息'),
           _deviceInfo(cam),
@@ -180,31 +183,34 @@ class _SingleViewPageState extends State<SingleViewPage> {
                 color: dot ?? Colors.white)),
       );
 
-  Widget _streamActions(BuildContext context, AppState state, Camera cam) => Row(
-        children: <Widget>[
-          Expanded(
-            child: OutlinedButton.icon(
-              onPressed: cam.canStream
-                  ? () => openExternalUrl(
-                      context, state.liveStreamUrl(cam), label: 'MJPEG 直播流')
-                  : null,
-              icon: const AppIcon(AppIcons.live, size: 16, color: AppColors.blue),
-              label: Text(cam.canStream ? '系统播放器打开直播流' : '未返回直播流凭证'),
-              style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.blue,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(11))),
-            ),
+  Widget _streamActions(BuildContext context, AppState state, Camera cam) {
+    final clips =
+        state.recordings.where((r) => r.cameraId == cam.id).toList();
+    return Row(
+      children: <Widget>[
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: clips.isEmpty
+                ? null
+                : () => _openPlayback(context, cam, clips.first),
+            icon: const AppIcon(AppIcons.play, size: 16, color: AppColors.blue),
+            label: Text(clips.isEmpty ? '今日暂无录像片段' : '打开录像回放（App 内）'),
+            style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.blue,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(11))),
           ),
-          const SizedBox(width: 8),
-          IconButton(
-            tooltip: '复制 RTSP 地址',
-            onPressed: () => copyToClipboard(context, state.rtspUrl(cam),
-                label: 'RTSP 地址已复制（可粘贴到支持 RTSP 的播放器）'),
-            icon: const AppIcon(AppIcons.more, size: 20),
-          ),
-        ],
-      );
+        ),
+        const SizedBox(width: 8),
+        IconButton(
+          tooltip: '复制 RTSP 地址',
+          onPressed: () => copyToClipboard(context, state.rtspUrl(cam),
+              label: 'RTSP 地址已复制（可粘贴到支持 RTSP 的播放器）'),
+          icon: const AppIcon(AppIcons.more, size: 20),
+        ),
+      ],
+    );
+  }
 
   Widget _actions(BuildContext context, AppState state, Camera cam) {
     final items = <_Action>[
@@ -294,6 +300,12 @@ class _SingleViewPageState extends State<SingleViewPage> {
     }
   }
 
+  void _openPlayback(BuildContext context, Camera cam, Recording r) {
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => PlaybackPage(recording: r, camera: cam),
+    ));
+  }
+
   Widget _ptz(BuildContext context, AppState state, Camera cam) {
     void move(String dir) => _run(() => state.ptzMove(cam.id, dir), '云台 $dir');
     return Row(
@@ -375,15 +387,20 @@ class _SingleViewPageState extends State<SingleViewPage> {
         ),
       );
 
-  /// 今日录像时间轴：真实的 Event/Query 片段，按开始时间在 24h 内定位。
+  /// 今日录像时间轴：可拖动定位，点击色块/列表项进入 App 内回放。
   Widget _timeline(BuildContext context, AppState state, Camera cam) {
     final now = DateTime.now();
     final todayStart = DateTime(now.year, now.month, now.day);
     final clips = state.recordings
-        .where((r) =>
-            r.cameraId == cam.id &&
-            !r.startTime.isBefore(todayStart))
+        .where(
+            (r) => r.cameraId == cam.id && !r.startTime.isBefore(todayStart))
         .toList();
+
+    if (!_scrubReady && clips.isNotEmpty) {
+      _scrubFraction =
+          TimelineMath.fractionOf(clips.first.startTime, todayStart);
+      _scrubReady = true;
+    }
 
     if (state.mediaState == LoadState.error) {
       return _notice(state.mediaError ?? '录像读取失败',
@@ -401,83 +418,127 @@ class _SingleViewPageState extends State<SingleViewPage> {
           onRetry: () => state.refreshMedia());
     }
 
+    final t = TimelineMath.timeAt(_scrubFraction, todayStart);
+    final hit = TimelineMath.clipAt(clips, t) ??
+        TimelineMath.nearestClip(clips, t);
+
     return Column(
       children: <Widget>[
-        Container(
-          height: 48,
-          decoration: BoxDecoration(
-            color: AppColors.card,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.line),
-          ),
-          child: Stack(
-            children: clips.map((r) {
-              final minutes = r.startTime.hour * 60 + r.startTime.minute;
-              final left = minutes / 1440;
-              final width =
-                  (r.durationSeconds / 60 / 1440).clamp(0.004, 1.0).toDouble();
-              return Positioned(
-                left: (MediaQuery.of(context).size.width - 32) * left,
-                width: (MediaQuery.of(context).size.width - 32) * width,
-                top: 0,
-                bottom: 0,
-                child: GestureDetector(
-                  onTap: () => openExternalUrl(
-                      context, state.recordingDownloadUrl(r),
-                      label: '录像片段'),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: (r.eventType == '移动侦测' ||
-                                  r.eventType == '告警输入')
-                          ? AppColors.red.withOpacity(.35)
-                          : AppColors.green.withOpacity(.3),
-                      border: Border(
-                        left: BorderSide(
-                            color: r.eventType == '移动侦测'
-                                ? AppColors.red
-                                : AppColors.green),
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-        ),
-        const SizedBox(height: 7),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: <Widget>[
             Text('00:00',
                 style: TextStyle(fontSize: 10, color: AppColors.faint)),
-            Text('12:00',
-                style: TextStyle(fontSize: 10, color: AppColors.faint)),
+            Text('拖动定位 ${TimelineMath.timeLabel(t)}',
+                style: const TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w600)),
             Text('24:00',
                 style: TextStyle(fontSize: 10, color: AppColors.faint)),
           ],
         ),
+        Slider(
+          value: _scrubFraction,
+          onChanged: (v) => setState(() => _scrubFraction = v),
+        ),
+        _clipTrack(context, cam, clips, todayStart),
         const SizedBox(height: 10),
-        ...clips.take(8).map((r) => Card(
-              child: ListTile(
-                dense: true,
-                leading: const AppIcon(AppIcons.play, size: 18),
-                title: Text(r.eventType,
-                    style: const TextStyle(fontSize: 12.5)),
-                subtitle: Text(
-                    '${r.startTime.hour.toString().padLeft(2, '0')}:${r.startTime.minute.toString().padLeft(2, '0')} · ${r.durationLabel}${r.locked ? ' · 已锁定' : ''}',
-                    style: TextStyle(fontSize: 10, color: AppColors.faint)),
-                trailing: const AppIcon(AppIcons.chevron, size: 15),
-                onTap: () => openExternalUrl(
-                    context, state.recordingDownloadUrl(r),
-                    label: '录像片段'),
-              ),
-            )),
+        _scrubCard(context, cam, t, hit),
+        const SizedBox(height: 10),
+        ...clips.take(8).map((r) => _clipTile(context, cam, r)),
         const SizedBox(height: 6),
-        Text('点击片段将用系统播放器打开 NAS 的真实录像流（App 内嵌变速回放需原生播放器，后续版本提供）。',
-            style: TextStyle(fontSize: 10.5, color: AppColors.faint)),
+        Text(
+          '拖动时间轴定位到任意时刻，点「回放」进入 App 内播放器；'
+          '色块与列表项也可直接打开对应片段（不再跳转浏览器）。',
+          style: TextStyle(fontSize: 10.5, color: AppColors.faint),
+        ),
       ],
     );
   }
+
+  Widget _clipTrack(BuildContext context, Camera cam,
+          List<Recording> clips, DateTime dayStart) =>
+      LayoutBuilder(
+        builder: (BuildContext ctx, BoxConstraints constraints) {
+          final w = constraints.maxWidth;
+          return Container(
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppColors.card,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Stack(
+              children: clips.map((r) {
+                final left = TimelineMath.fractionOf(r.startTime, dayStart);
+                final width = (r.durationSeconds /
+                        TimelineMath.secondsPerDay)
+                    .clamp(0.004, 1.0)
+                    .toDouble();
+                return Positioned(
+                  left: w * left,
+                  width: w * width,
+                  top: 0,
+                  bottom: 0,
+                  child: GestureDetector(
+                    onTap: () => _openPlayback(context, cam, r),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: (r.eventType == '移动侦测' ||
+                                    r.eventType == '告警输入')
+                            ? AppColors.red.withOpacity(.35)
+                            : AppColors.green.withOpacity(.3),
+                        border: Border(
+                          left: BorderSide(
+                              color: r.eventType == '移动侦测'
+                                  ? AppColors.red
+                                  : AppColors.green),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          );
+        },
+      );
+
+  Widget _scrubCard(
+          BuildContext context, Camera cam, DateTime t, Recording? hit) =>
+      Card(
+        child: ListTile(
+          leading: const BadgeIcon(AppIcons.timeline, tone: IconTone.blue),
+          title: Text('定位到 ${TimelineMath.timeLabel(t)}',
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          subtitle: Text(
+              hit == null
+                  ? '该时刻附近无录像片段'
+                  : '最近片段：${hit.eventType} · ${hit.durationLabel}',
+              style: TextStyle(fontSize: 10.5, color: AppColors.faint)),
+          trailing: FilledButton.icon(
+            onPressed:
+                hit == null ? null : () => _openPlayback(context, cam, hit),
+            icon: const AppIcon(AppIcons.play, size: 14, color: Colors.white),
+            label: const Text('回放', style: TextStyle(fontSize: 11)),
+          ),
+        ),
+      );
+
+  Widget _clipTile(BuildContext context, Camera cam, Recording r) => Card(
+        margin: const EdgeInsets.only(bottom: 7),
+        child: ListTile(
+          dense: true,
+          leading: const AppIcon(AppIcons.play, size: 17),
+          title: Text(r.eventType,
+              style: const TextStyle(fontSize: 12.5)),
+          subtitle: Text(
+              '${TimelineMath.timeLabel(r.startTime)} · ${r.durationLabel}'
+              '${r.locked ? ' · 已锁定' : ''}',
+              style: TextStyle(fontSize: 10, color: AppColors.faint)),
+          trailing: const AppIcon(AppIcons.chevron, size: 15),
+          onTap: () => _openPlayback(context, cam, r),
+        ),
+      );
 
   Widget _notice(String msg, {required VoidCallback onRetry}) => Container(
         padding: const EdgeInsets.all(16),

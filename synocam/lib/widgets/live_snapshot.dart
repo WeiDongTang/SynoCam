@@ -1,16 +1,24 @@
-// 实时预览组件：真实轮询 SS GetSnapshot。
+// 实时预览组件：真实画面，两条链路自动切换。
 //
-// 为什么不是 MJPEG/RTSP：Flutter 的 Image.network 不支持 multipart/x-mixed-replace
-// （MJPEG 流），RTSP 又需要原生播放器插件。SS 官方 Web API 提供 GetSnapshot，
-// 以 1–2 秒间隔轮询 JPEG 是纯 Dart 即可落地的「准实时」方案，
-// 与 DS Cam 低带宽模式一致；同时保留直播流 URL 供系统播放器打开。
+// 为什么不再用 Image.network：
+//   SS 的二进制/流端点（GetSnapshot、VideoStreaming/Stream）要求
+//   Cookie: id=<sid>; did=<did>，而 Image.network 走独立 HttpClient、
+//   不带会话 Cookie，DSM 会返回 HTTP 465 + {"error":{"code":400}}。
+//   现在统一走 SynoClient 的 Dio 链路（带 Cookie、证书策略、可读诊断）。
 //
-// 每次刷新用 _t 时间戳绕过 CDN/浏览器缓存；失败时显示真实错误并允许重试。
+// 模式：
+//   1) MJPEG 连续流（NAS 返回 StmKey 时）——真正的连续画面；
+//      出错或 6 秒无帧自动降级；
+//   2) Camera/GetSnapshot 快照轮询 ——保底，多版本/多参数回退。
+//
+// 所有失败显示真实 HTTP 状态 / DSM 错误码，绝不显示占位假画面。
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/network/mjpeg_stream.dart';
 import '../core/theme/app_colors.dart';
 import '../core/theme/app_icons.dart';
 import '../data/models/camera.dart';
@@ -34,14 +42,24 @@ class LiveSnapshot extends StatefulWidget {
 }
 
 class _LiveSnapshotState extends State<LiveSnapshot> {
-  Timer? _timer;
-  int _nonce = 0;
-  bool _firstLoaded = false;
+  StreamSubscription<Uint8List>? _sub;
+  Timer? _pollTimer;
+  Timer? _watchdog;
+
+  Uint8List? _frame;
+  String? _error;
+  String? _fallbackNote;
+  bool _busy = false;
+  bool _streamMode = true;
+  int _pollSeconds = 2;
+  String _modeLabel = '快照';
 
   @override
   void initState() {
     super.initState();
-    _start();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _start();
+    });
   }
 
   @override
@@ -52,58 +70,187 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     }
   }
 
+  @override
+  void dispose() {
+    _sub?.cancel();
+    _pollTimer?.cancel();
+    _watchdog?.cancel();
+    super.dispose();
+  }
+
+  void _reset() {
+    _sub?.cancel();
+    _sub = null;
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    _watchdog?.cancel();
+    _watchdog = null;
+    _fallbackNote = null;
+    _error = null;
+  }
+
   void _start() {
-    _timer?.cancel();
-    if (widget.paused) return;
-    final seconds = context.read<AppState>().prefs.pollSeconds;
-    _timer = Timer.periodic(Duration(seconds: seconds), (_) {
-      if (!mounted) return;
-      setState(() => _nonce++);
+    _reset();
+    if (widget.paused) {
+      if (mounted) setState(() {});
+      return;
+    }
+    final state = context.read<AppState>();
+    _streamMode = state.prefs.streamMode;
+    _pollSeconds = state.prefs.pollSeconds;
+    if (_streamMode && widget.camera.canStream) {
+      _startStream(state);
+    } else {
+      _startPolling(state);
+    }
+  }
+
+  void _startPolling(AppState state) {
+    _modeLabel = '快照';
+    _pollTimer = Timer.periodic(
+        Duration(seconds: _pollSeconds), (_) => _poll(state));
+    _poll(state);
+  }
+
+  Future<void> _poll(AppState state) async {
+    if (_busy || !mounted) return;
+    _busy = true;
+    try {
+      final bytes = await state.snapshotBytes(widget.camera);
+      if (mounted) {
+        setState(() {
+          _frame = Uint8List.fromList(bytes);
+          _error = null;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      _busy = false;
+    }
+  }
+
+  void _startStream(AppState state) {
+    _modeLabel = '连续流';
+    final client = MjpegStreamClient(
+      url: state.liveStreamUrl(widget.camera),
+      cookie: state.cookieHeader,
+    );
+    _sub = client.frames().listen(
+      (Uint8List frame) {
+        if (!mounted) return;
+        _watchdog?.cancel();
+        setState(() {
+          _frame = frame;
+          _error = null;
+        });
+      },
+      onError: (Object e) {
+        if (!mounted) return;
+        _fallbackToPolling(state, '连续流失败：$e');
+      },
+      cancelOnError: true,
+    );
+    // 流挂着但一直不出帧时也要降级，避免永久黑屏。
+    _watchdog = Timer(const Duration(seconds: 6), () {
+      if (!mounted || _frame != null || _sub == null) return;
+      _fallbackToPolling(state, '连续流 6 秒内未返回画面');
     });
   }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
+  void _fallbackToPolling(AppState state, String reason) {
+    _sub?.cancel();
+    _sub = null;
+    _watchdog?.cancel();
+    _watchdog = null;
+    _fallbackNote = reason;
+    _startPolling(state);
   }
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-    if (!state.isLoggedIn) {
-      return _placeholder('未登录');
+
+    // 设置页修改刷新间隔 / 画面模式后，所有预览组件立即按新配置重启。
+    final poll = state.prefs.pollSeconds;
+    final mode = state.prefs.streamMode;
+    if (poll != _pollSeconds || mode != _streamMode) {
+      _pollSeconds = poll;
+      _streamMode = mode;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _start();
+      });
     }
+
+    if (!state.isLoggedIn) return _placeholder('未登录');
     if (!widget.camera.isOnline) {
       return _placeholder('摄像机已停用');
     }
-    final url = state.snapshotUrl(widget.camera, nonce: _nonce);
-    return Image.network(
-      url,
-      fit: widget.fit,
-      gaplessPlayback: true,
-      cacheWidth: 640,
-      frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-        if (frame != null) _firstLoaded = true;
-        if (wasSynchronouslyLoaded || frame != null) return child;
-        return _firstLoaded
-            ? child
-            : const Center(
-                child: SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2)),
-              );
-      },
-      errorBuilder: (context, error, stackTrace) {
-        return _ErrorTile(
-          message: '画面加载失败',
-          detail: '$error',
-          onRetry: () => setState(() => _nonce++),
-        );
-      },
+    if (_frame == null && _error != null) {
+      return _ErrorTile(
+        message: '画面加载失败',
+        detail: '$_error\n${state.mediaDiagnostic}',
+        onRetry: () {
+          setState(() => _error = null);
+          _start();
+        },
+      );
+    }
+    if (_frame == null) {
+      return Container(
+        color: const Color(0xFF22262F),
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(height: 8),
+            Text('正在获取 $_modeLabel画面…',
+                style: const TextStyle(fontSize: 10, color: Colors.white54)),
+          ],
+        ),
+      );
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        Image.memory(_frame!, fit: widget.fit, gaplessPlayback: true),
+        if (_fallbackNote != null)
+          Positioned(
+            left: 6,
+            bottom: 6,
+            child: _chip('$_modeLabel模式 · ${_shortNote(_fallbackNote!)}',
+                AppColors.amber),
+          ),
+        if (_error != null && _frame != null)
+          Positioned(
+            right: 6,
+            top: 6,
+            child: _chip('刷新失败，点此重试', AppColors.red),
+          ),
+      ],
     );
   }
+
+  String _shortNote(String s) {
+    final t = s.replaceAll('\n', ' ');
+    return t.length > 26 ? '${t.substring(0, 26)}…' : t;
+  }
+
+  Widget _chip(String text, Color color) => GestureDetector(
+        onTap: _error == null ? null : () => _start(),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          decoration: BoxDecoration(
+              color: Colors.black54, borderRadius: BorderRadius.circular(5)),
+          child: Text(text,
+              style: TextStyle(fontSize: 8.5, color: color)),
+        ),
+      );
 
   Widget _placeholder(String text) => Container(
         color: const Color(0xFF22262F),
@@ -140,11 +287,11 @@ class _ErrorTile extends StatelessWidget {
             const SizedBox(height: 4),
             Text(message,
                 style: const TextStyle(fontSize: 10, color: Colors.white70)),
-            const SizedBox(height: 2),
+            const SizedBox(height: 3),
             Text(
-              detail.length > 90 ? '${detail.substring(0, 90)}…' : detail,
+              detail.length > 150 ? '${detail.substring(0, 150)}…' : detail,
               textAlign: TextAlign.center,
-              maxLines: 2,
+              maxLines: 3,
               style: const TextStyle(fontSize: 8, color: Colors.white38),
             ),
             const SizedBox(height: 5),

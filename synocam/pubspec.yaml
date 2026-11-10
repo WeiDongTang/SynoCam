@@ -22,8 +22,13 @@ dependencies:
   provider: ^6.1.2
   dio: ^5.7.0
   shared_preferences: ^2.3.0
-  # 录像片段用系统播放器打开、跳转 SS 网页端配置（App 内不伪造这些能力）。
   url_launcher: ^6.3.0
+  # App 内录像回放播放器：播放 NAS 下载的真实片段，支持拖动 seek 与倍速。
+  # 精确锁定 2.9.2（Flutter 3.24.5 / Dart 3.5 同期版本）：其 iOS 实现
+  # video_player_avfoundation 要求 iOS 12.0，与工程默认 deployment target 一致。
+  # 若用 ^2.9.2，pub 在更高 Dart SDK 下会解析到要求 iOS 15.0 / Dart 3.6+ 的新版，
+  # 导致 macOS CI 的 pod install 失败；锁版本可保证可复现构建。
+  video_player: 2.9.2
 
 dev_dependencies:
   flutter_test:

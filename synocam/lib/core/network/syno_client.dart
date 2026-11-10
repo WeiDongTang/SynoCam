@@ -1,14 +1,22 @@
 // Synology DSM / Surveillance Station Web API 客户端（真实链路，无演示数据）。
 //
-// 链路：auth.cgi 登录 → SID → SYNO.API.Info 动态发现各 API 的 path/maxVersion
-// → 之后每个请求带 _sid 调对应 CGI。所有失败都抛出携带 DSM 错误码的
-// SynoException，绝不静默吞掉后回退到假数据。
-
+// 关键实证（SS Web API 官方文档 + 社区可运行实现）：
+//  - JSON API（Camera/List、Event/Query）用 _sid query 即可；
+//  - 二进制/流端点（GetSnapshot、VideoStreaming/Stream）走另一条鉴权，
+//    必须同时带 Cookie: id=<sid>; did=<did>，否则 DSM 返回 HTTP 465 +
+//    {"error":{"code":400},"success":false}（这正是「画面加载失败 465」的根因）；
+//  - GetSnapshot 参数随版本变化：v1/v8 用 cameraId+camStm，v9 用 id+profileType，
+//    故做多组合回退，并缓存成功组合；
+//  - StmKey 来自 Camera/GetLiveViewPath 返回的完整 URL，不是 Camera/List 的普通字段。
+//
+// 所有失败都抛出携带诊断的 SynoException，绝不静默回退到假数据。
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
 
 import '../config/app_config.dart';
+import '../../data/models/camera.dart';
+import '../../data/models/media.dart';
 import '../../data/models/syno_session.dart';
 import 'syno_api.dart';
 
@@ -18,20 +26,39 @@ class SynoClient {
             Dio(BaseOptions(
               connectTimeout: AppConfig.connectTimeout,
               receiveTimeout: AppConfig.receiveTimeout,
-              // 4xx 也要读 body，DSM 把业务错误放在 HTTP 200 的 JSON 里，
-              // 但部分网关/反向代理会返回 4xx + JSON，不能让 Dio 直接抛异常。
-              validateStatus: (s) => s != null && s < 500,
-            ));
+              // 465 等 DSM 自定义 HTTP 码也要读 body 才能给出可读诊断。
+              validateStatus: (s) => s != null && s < 600,
+            )) {
+    // 统一为所有请求注入会话 Cookie 与 UA：流端点依赖 Cookie，JSON API 也兼容。
+    _dio.interceptors.add(InterceptorsWrapper(
+      onRequest: (RequestOptions o, RequestInterceptorHandler h) {
+        final c = _cookie;
+        if (c.isNotEmpty) o.headers['Cookie'] = c;
+        o.headers.putIfAbsent('User-Agent', () => 'SynoCam/1.0');
+        h.next(o);
+      },
+    ));
+  }
 
   final Dio _dio;
   SynoSession? _session;
   Map<String, SynoApiInfoEntry> _apiInfo = <String, SynoApiInfoEntry>{};
 
+  /// 最近一次快照/流的诊断（供设置页「连接诊断」展示）。
+  String _mediaDiagnostic = '尚未请求';
+  String get mediaDiagnostic => _mediaDiagnostic;
+
+  _SnapshotRecipe? _snapshotRecipe;
+
   SynoSession? get session => _session;
   bool get isLoggedIn => _session != null;
-
-  /// 登录成功后发现的 API 描述（供诊断页展示 NAS 实际支持的能力）。
   Map<String, SynoApiInfoEntry> get apiInfo => _apiInfo;
+
+  /// SS 流端点要求的会话 Cookie（构造逻辑集中在 SynoSession，便于自检覆盖）。
+  String get _cookie => _session?.cookieHeader ?? '';
+
+  /// 供 MJPEG 流客户端复用（dart:io HttpClient 不与 Dio 共享拦截器）。
+  String get cookieHeader => _cookie;
 
   void restoreSession(SynoSession session) => _session = session;
 
@@ -52,8 +79,7 @@ class SynoClient {
   String _cgiFor(String api) =>
       _apiInfo[api]?.cgi ?? SynoEndpoints.entryCgi;
 
-  /// 查询 NAS 实际支持的 API 与版本。SS 各版本 endpoint/版本差异大，
-  /// 硬编码必然在某些 NAS 上失效，故登录后立刻做一次能力发现。
+  /// 查询 NAS 实际支持的 API 与版本。
   Future<void> discoverApis() async {
     final url = buildSynoUrl(
       host: _session?.host ?? '',
@@ -89,13 +115,10 @@ class SynoClient {
         _apiInfo = parseApiInfo(Map<String, dynamic>.from(json['data'] as Map));
       }
     } catch (_) {
-      // 能力发现失败不阻断登录：后续用 defaultVersions 兜底，
-      // 但 UI 会显示「未能读取 NAS API 信息」以便排查。
       _apiInfo = <String, SynoApiInfoEntry>{};
     }
   }
 
-  /// 登录。成功返回 SynoSession（含 SID）；失败抛 SynoException。
   Future<SynoSession> login({
     required String host,
     required String account,
@@ -142,6 +165,7 @@ class SynoClient {
       port: p,
       did: data['did'] as String?,
     );
+    _snapshotRecipe = null;
     await discoverApis();
     return _session!;
   }
@@ -150,6 +174,7 @@ class SynoClient {
     final s = _session;
     _session = null;
     _apiInfo = <String, SynoApiInfoEntry>{};
+    _snapshotRecipe = null;
     if (s == null) return;
     final url = buildSynoUrl(
       host: s.host,
@@ -171,7 +196,6 @@ class SynoClient {
     }
   }
 
-  /// 调用一个 SYNO API。使用动态发现的 cgi 与 version，自动附加 _sid。
   Future<Map<String, dynamic>> call({
     required String api,
     required String method,
@@ -198,12 +222,11 @@ class SynoClient {
     if (responseType == ResponseType.bytes) {
       final r = await _dio.get<List<int>>(url,
           options: Options(responseType: ResponseType.bytes));
-      return <String, dynamic>{'bytes': r.data};
+      return <String, dynamic>{'bytes': r.data, 'status': r.statusCode};
     }
     return (await _getRaw(url)).requireData();
   }
 
-  /// 与 call 相同，但不抛异常：用于「该 NAS 版本可能不支持」的可选能力探测。
   Future<SynoResponse?> tryCall({
     required String api,
     required String method,
@@ -239,7 +262,8 @@ class SynoClient {
     return s;
   }
 
-  /// 摄像机列表。带 streamInfo / camStm 才会返回直播流密钥 StmKey。
+  // ── 摄像机 ────────────────────────────────────────────────────────────
+
   Future<List<Map<String, dynamic>>> listCameras() async {
     final data = await call(
       api: SynoApi.camera,
@@ -261,61 +285,205 @@ class SynoClient {
     return raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
   }
 
-  /// 取指定摄像机的直播流路径（SS 返回的完整 URL 里含 StmKey）。
-  Future<List<String>> getLiveViewPaths(List<int> cameraIds) async {
-    if (cameraIds.isEmpty) return <String>[];
-    final data = await call(
-      api: SynoApi.camera,
-      method: SynoMethod.getLiveViewPath,
-      params: <String, String?>{'idList': cameraIds.join(',')},
-    );
-    final out = <String>[];
+  /// GetLiveViewPath：返回 cameraId → 完整 MJPEG 流 URL（含 StmKey）。
+  /// SS 各版本把路径放在 data 的不同层级，故递归收集并按 cameraId 配对。
+  Future<Map<int, String>> getLiveViewPaths(List<int> cameraIds) async {
+    if (cameraIds.isEmpty) return <int, String>{};
+    try {
+      final data = await call(
+        api: SynoApi.camera,
+        method: SynoMethod.getLiveViewPath,
+        version: 9,
+        params: <String, String?>{'idList': cameraIds.join(',')},
+      );
+      return _pairPaths(data, cameraIds);
+    } on SynoException catch (_) {
+      // 部分 SS 版本把该方法挂在较低版本，再试一次。
+      try {
+        final data = await call(
+          api: SynoApi.camera,
+          method: SynoMethod.getLiveViewPath,
+          version: 1,
+          params: <String, String?>{'idList': cameraIds.join(',')},
+        );
+        return _pairPaths(data, cameraIds);
+      } catch (_) {
+        return <int, String>{};
+      }
+    }
+  }
+
+  Map<int, String> _pairPaths(Map<String, dynamic> data, List<int> ids) {
+    final found = <String>[];
     void collect(dynamic v) {
-      if (v is String && v.contains('://')) out.add(v);
+      if (v is String && v.contains('method=Stream')) found.add(v);
       if (v is Map) v.values.forEach(collect);
       if (v is List) v.forEach(collect);
     }
 
     collect(data);
+    final out = <int, String>{};
+    for (final path in found) {
+      final m = RegExp(r'cameraId[=":\s]*"?(\d+)', caseSensitive: false)
+          .firstMatch(path);
+      if (m != null) {
+        final id = int.tryParse(m.group(1)!) ?? 0;
+        if (ids.contains(id)) out[id] = path;
+      }
+    }
+    // URL 里没有 cameraId 时，按请求顺序配对。
+    if (out.isEmpty && found.isNotEmpty) {
+      for (var i = 0; i < ids.length && i < found.length; i++) {
+        out[ids[i]] = found[i];
+      }
+    }
     return out;
   }
 
-  /// 真实快照：返回 JPEG 字节。
-  Future<List<int>> getSnapshot(int cameraId) async {
-    final data = await call(
-      api: SynoApi.camera,
-      method: SynoMethod.getSnapshot,
-      params: <String, String?>{'cameraId': '$cameraId', 'camStm': '1'},
-      responseType: ResponseType.bytes,
-    );
-    final bytes = data['bytes'];
-    if (bytes is List<int> && bytes.isNotEmpty) return bytes;
-    throw SynoException(SynoErrorCode.unknown, '快照为空或格式异常');
+  /// 把 SS 返回的流 URL 改写到当前会话的 host/port/scheme。
+  /// NAS 常返回内网 IP，用户从外网（DDNS/QuickConnect）访问时必须重写。
+  String absolutizeStreamUrl(String raw) {
+    final s = _session;
+    if (s == null) return raw;
+    final uri = Uri.tryParse(raw);
+    if (uri == null) return raw;
+    if (!uri.hasScheme) {
+      return buildSynoUrl(
+        host: s.host,
+        cgi: uri.path.isEmpty ? SynoEndpoints.entryCgi : uri.path,
+        https: s.https,
+        port: s.port,
+        query: uri.queryParameters,
+      );
+    }
+    return uri
+        .replace(
+          scheme: s.https ? 'https' : 'http',
+          host: s.host,
+          port: s.port,
+        )
+        .toString();
   }
 
-  /// 快照 URL（供 Image.network 轮询使用）。带 camStm 与防缓存时间戳。
-  String snapshotUrl(int cameraId, {int? nonce}) {
-    final s = _requireSession();
-    return buildSynoUrl(
-      host: s.host,
-      cgi: _cgiFor(SynoApi.camera),
-      https: s.https,
-      port: s.port,
-      query: <String, String?>{
-        'api': SynoApi.camera,
-        'version': '${_versionFor(SynoApi.camera)}',
-        'method': SynoMethod.getSnapshot,
+  // ── 快照（真实 JPEG 字节，多重回退）─────────────────────────────────
+
+  List<_SnapshotRecipe> _snapshotRecipes(int cameraId) {
+    final v = _versionFor(SynoApi.camera);
+    final all = <_SnapshotRecipe>[
+      _SnapshotRecipe(v, <String, String>{
+        'cameraId': '$cameraId',
+        'id': '$cameraId',
+        'camStm': '1',
+        'profileType': '1',
+      }, 'v$v 全参数'),
+      _SnapshotRecipe(1, <String, String>{
         'cameraId': '$cameraId',
         'camStm': '1',
-        '_sid': s.sid,
-        '_t': nonce == null ? null : '$nonce',
-      },
+      }, 'v1 cameraId'),
+      _SnapshotRecipe(8, <String, String>{
+        'cameraId': '$cameraId',
+        'camStm': '1',
+      }, 'v8 cameraId'),
+      _SnapshotRecipe(9, <String, String>{
+        'id': '$cameraId',
+        'profileType': '1',
+      }, 'v9 id/profileType'),
+    ];
+    final cached = _snapshotRecipe;
+    if (cached != null) {
+      all.removeWhere((r) => r.label == cached.label);
+      all.insert(0, cached);
+    }
+    return all;
+  }
+
+  String _snapshotUrl(
+          int cameraId, int version, Map<String, String> extra) =>
+      buildSynoUrl(
+        host: _requireSession().host,
+        cgi: _cgiFor(SynoApi.camera),
+        https: _session!.https,
+        port: _session!.port,
+        query: <String, String?>{
+          'api': SynoApi.camera,
+          'version': '$version',
+          'method': SynoMethod.getSnapshot,
+          '_sid': _session!.sid,
+          '_t': '${DateTime.now().millisecondsSinceEpoch}',
+          ...extra,
+        },
+      );
+
+  /// 真实快照：返回 JPEG/PNG 字节。带 Cookie、多版本/多参数回退、成功组合缓存。
+  Future<List<int>> getSnapshot(int cameraId) async {
+    final notes = <String>[];
+    for (final r in _snapshotRecipes(cameraId)) {
+      final url = _snapshotUrl(cameraId, r.version, r.params);
+      try {
+        final resp = await _dio.get<List<int>>(
+          url,
+          options: Options(
+            responseType: ResponseType.bytes,
+            headers: <String, dynamic>{
+              'Accept': 'image/jpeg,image/png,image/*,*/*',
+            },
+          ),
+        );
+        final bytes = resp.data;
+        final status = resp.statusCode ?? 0;
+        if (status == 200 && bytes != null && MediaBytes.isImage(bytes)) {
+          _snapshotRecipe = r;
+          _mediaDiagnostic = '快照成功：${r.label}（${bytes.length} 字节）';
+          return bytes;
+        }
+        notes.add('${r.label}: HTTP $status ${_bodyHint(bytes)}');
+      } on DioException catch (e) {
+        notes.add('${r.label}: HTTP ${e.response?.statusCode ?? '?'} ${e.type.name}');
+      }
+    }
+    _mediaDiagnostic = '快照全部失败 → ${notes.join(' | ')}';
+    throw SynoException(SynoErrorCode.unknown,
+        '快照获取失败（已尝试 ${notes.length} 种参数组合）：${notes.take(2).join('；')}');
+  }
+
+  /// 快照 URL（仅用于复制链接/诊断；实际取图统一走 getSnapshot 的 Dio 链路）。
+  String snapshotUrl(int cameraId, {int? nonce}) {
+    final r = _snapshotRecipe;
+    return _snapshotUrl(
+      cameraId,
+      r?.version ?? _versionFor(SynoApi.camera),
+      r?.params ??
+          <String, String>{'cameraId': '$cameraId', 'camStm': '1'},
     );
   }
 
-  /// MJPEG 直播流 URL（真实 SS 流；StmKey 为空时不可用，UI 会明确提示）。
-  String liveStreamUrl({required int cameraId, String? stmKey}) {
+  // 图片/录像字节识别统一走 MediaBytes（纯 Dart，可被核心自检覆盖）。
+
+  String _bodyHint(List<int>? b) {
+    if (b == null || b.isEmpty) return '空响应';
+    final text = latin1.decode(b.take(300).toList(), allowInvalid: true);
+    final m = RegExp(r'"code"\s*:\s*(\d+)').firstMatch(text);
+    if (m != null) {
+      return 'DSM 错误码 ${m.group(1)}（${SynoErrorCode.describe(int.parse(m.group(1)!))}）';
+    }
+    return text.replaceAll(RegExp(r'\s+'), ' ').substring(
+        0, text.length > 60 ? 60 : text.length);
+  }
+
+  // ── MJPEG 直播 / 回放流 ──────────────────────────────────────────────
+
+  /// 优先返回 NAS 给出的原始流路径；否则按官方格式拼装。
+  String liveStreamUrl({
+    required Camera camera,
+    int? startTime,
+    int? endTime,
+  }) {
     final s = _requireSession();
+    if (startTime == null &&
+        camera.livePath != null &&
+        camera.livePath!.isNotEmpty) {
+      return absolutizeStreamUrl(camera.livePath!);
+    }
     final api = _apiInfo.containsKey(SynoApi.videoStream)
         ? SynoApi.videoStream
         : SynoApi.videoStreamAlt;
@@ -326,24 +494,103 @@ class SynoClient {
       port: s.port,
       query: <String, String?>{
         'api': api,
-        'version': '${_versionFor(api)}',
+        'version': '1',
         'method': SynoMethod.stream,
         'format': 'mjpeg',
-        'cameraId': '$cameraId',
-        'StmKey': (stmKey == null || stmKey.isEmpty) ? null : stmKey,
+        'cameraId': '${camera.id}',
+        'StmKey': (camera.stmKey == null || camera.stmKey!.isEmpty)
+            ? null
+            : camera.stmKey,
         '_sid': s.sid,
+        'startTime': startTime == null ? null : '$startTime',
+        'endTime': endTime == null ? null : '$endTime',
       },
     );
   }
 
-  /// RTSP 直播路径（供系统播放器 / 后续原生播放器接入）。
   String rtspUrl(int cameraId) {
     final s = _requireSession();
     return 'rtsp://${s.host}:554/Sms=$cameraId.unicast';
   }
 
-  /// 录像事件查询：SYNO.SurveillanceStation.Event / Query。
-  /// 这是 SS 的录像片段列表（含锁定、时间、录制模式），也是通知页的真实数据源。
+  // ── 录像片段下载（App 内回放用）─────────────────────────────────────
+
+  /// 下载真实录像片段。SS 各版本的 Download 参数不一致，做多重回退并
+  /// 校验响应确实是媒体文件（而不是 {"error":{"code":400}} 这样的 JSON）。
+  Future<RecordingFile> downloadRecording(Recording r) async {
+    final from = r.startTime.millisecondsSinceEpoch ~/ 1000;
+    final to = from + (r.durationSeconds > 0 ? r.durationSeconds : 60);
+    final recipes = <Map<String, String>>[
+      <String, String>{
+        'id': r.id,
+        'cameraId': '${r.cameraId}',
+        'startTime': '$from',
+        'stopTime': '$to',
+      },
+      <String, String>{'idList': r.id},
+      <String, String>{
+        'recordingId': r.id,
+        'cameraId': '${r.cameraId}',
+        'startTime': '$from',
+        'endTime': '$to',
+      },
+      <String, String>{'id': r.id},
+    ];
+    final notes = <String>[];
+    for (final params in recipes) {
+      final url = _recordingUrl(params);
+      try {
+        final resp = await _dio.get<List<int>>(
+          url,
+          options: Options(
+            responseType: ResponseType.bytes,
+            receiveTimeout: const Duration(seconds: 90),
+          ),
+        );
+        final bytes = resp.data;
+        final status = resp.statusCode ?? 0;
+        if (status == 200 && bytes != null && !MediaBytes.looksLikeJsonError(bytes)) {
+          _mediaDiagnostic = '录像下载成功：${params.keys.join(',')}'
+              '（${bytes.length} 字节）';
+          return RecordingFile(
+            bytes: bytes,
+            extension: MediaBytes.extensionFor(bytes),
+            source: params.keys.join(','),
+            contentType:
+                '${resp.headers.value('content-type') ?? 'application/octet-stream'}',
+          );
+        }
+        notes.add('HTTP $status ${_bodyHint(bytes)}');
+      } on DioException catch (e) {
+        notes.add('HTTP ${e.response?.statusCode ?? '?'} ${e.type.name}');
+      }
+    }
+    _mediaDiagnostic = '录像下载全部失败 → ${notes.join(' | ')}';
+    throw SynoException(SynoErrorCode.unknown,
+        '录像片段获取失败：${notes.take(2).join('；')}');
+  }
+
+  String _recordingUrl(Map<String, String> params) => buildSynoUrl(
+        host: _requireSession().host,
+        cgi: _cgiFor(SynoApi.recording),
+        https: _session!.https,
+        port: _session!.port,
+        query: <String, String?>{
+          'api': SynoApi.recording,
+          'version': '${_versionFor(SynoApi.recording)}',
+          'method': SynoMethod.download,
+          '_sid': _session!.sid,
+          ...params,
+        },
+      );
+
+  /// 仅用于「复制链接」这类用户主动操作，不再作为点击事件的默认行为。
+  String recordingDownloadUrl(String id) => _recordingUrl(<String, String>{
+        'id': id,
+      });
+
+  // ── 录像事件 / 日志 / 其它真实 API ──────────────────────────────────
+
   Future<Map<String, dynamic>> queryEvents({
     int limit = 100,
     int offset = 0,
@@ -369,7 +616,6 @@ class SynoClient {
       );
     } on SynoException catch (e) {
       if (!SynoErrorCode.isUnsupported(e.code)) rethrow;
-      // 少数 SS 版本把录像放在 Recording/List，做一次真实回退。
       return call(
         api: SynoApi.recording,
         method: SynoMethod.list,
@@ -384,7 +630,6 @@ class SynoClient {
     }
   }
 
-  /// SS 事件日志（通知）。不支持该 API 时返回 null，UI 显示真实空态而非假数据。
   Future<Map<String, dynamic>?> queryLog({int limit = 100}) async {
     final r = await tryCall(
       api: SynoApi.log,
@@ -394,61 +639,35 @@ class SynoClient {
     return r?.success == true ? r?.data : null;
   }
 
-  /// 锁定 / 解锁录像（先试 Recording，再回退 Event）。
   Future<void> setRecordingLocked(String id, bool locked) async {
     final method = locked ? SynoMethod.lock : SynoMethod.unlock;
     try {
       await call(
-        api: SynoApi.recording,
-        method: method,
-        params: <String, String?>{'id': id},
-      );
+          api: SynoApi.recording, method: method,
+          params: <String, String?>{'id': id});
     } on SynoException catch (e) {
       if (!SynoErrorCode.isUnsupported(e.code)) rethrow;
       await call(
-        api: SynoApi.event,
-        method: method,
-        params: <String, String?>{'id': id},
-      );
+          api: SynoApi.event, method: method,
+          params: <String, String?>{'id': id});
     }
   }
 
   Future<void> deleteRecording(String id) async {
     try {
       await call(
-        api: SynoApi.recording,
-        method: SynoMethod.delete,
-        params: <String, String?>{'id': id},
-      );
+          api: SynoApi.recording,
+          method: SynoMethod.delete,
+          params: <String, String?>{'id': id});
     } on SynoException catch (e) {
       if (!SynoErrorCode.isUnsupported(e.code)) rethrow;
       await call(
-        api: SynoApi.event,
-        method: SynoMethod.delete,
-        params: <String, String?>{'id': id},
-      );
+          api: SynoApi.event,
+          method: SynoMethod.delete,
+          params: <String, String?>{'id': id});
     }
   }
 
-  /// 录像下载 / 播放 URL（带 _sid，可交给系统播放器打开）。
-  String recordingDownloadUrl(String id) {
-    final s = _requireSession();
-    return buildSynoUrl(
-      host: s.host,
-      cgi: _cgiFor(SynoApi.recording),
-      https: s.https,
-      port: s.port,
-      query: <String, String?>{
-        'api': SynoApi.recording,
-        'version': '${_versionFor(SynoApi.recording)}',
-        'method': SynoMethod.download,
-        'id': id,
-        '_sid': s.sid,
-      },
-    );
-  }
-
-  ///  Surveillance Station 网页端地址（用于官方 API 未提供的高级配置）。
   String webUiUrl() {
     final s = _requireSession();
     return '${s.https ? 'https' : 'http'}://${s.host}:${s.port}';
@@ -512,6 +731,16 @@ class SynoClient {
     );
   }
 
+  /// 主动诊断：跑一次真实快照并把结果写入 mediaDiagnostic。
+  Future<String> testSnapshot(int cameraId) async {
+    try {
+      await getSnapshot(cameraId);
+    } catch (_) {
+      // 诊断信息已写入 _mediaDiagnostic。
+    }
+    return _mediaDiagnostic;
+  }
+
   Future<SynoResponse> _getRaw(String url) async {
     try {
       final r = await _dio.get<dynamic>(url);
@@ -542,4 +771,11 @@ class SynoClient {
       throw SynoException(SynoErrorCode.unknown, '网络错误：${e.message}');
     }
   }
+}
+
+class _SnapshotRecipe {
+  const _SnapshotRecipe(this.version, this.params, this.label);
+  final int version;
+  final Map<String, String> params;
+  final String label;
 }

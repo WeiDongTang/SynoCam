@@ -71,6 +71,18 @@ class SettingsPage extends StatelessWidget {
               ),
               const Divider(height: 1),
               SwitchListTile(
+                secondary: const BadgeIcon(AppIcons.live),
+                title: const Text('优先 MJPEG 连续流',
+                    style: TextStyle(
+                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+                subtitle: Text(
+                    'NAS 返回流凭证时使用连续画面；不可用或 6 秒无帧自动降级为快照轮询',
+                    style: TextStyle(fontSize: 11, color: AppColors.sub)),
+                value: state.prefs.streamMode,
+                onChanged: (v) => state.setStreamMode(v),
+              ),
+              const Divider(height: 1),
+              SwitchListTile(
                 secondary: const BadgeIcon(AppIcons.moon,
                     tone: IconTone.amber),
                 title: const Text('免打扰',
@@ -90,11 +102,9 @@ class SettingsPage extends StatelessWidget {
                   '需接入本机生物识别与安全存储'),
               _disabledRow(AppIcons.airplay, 'AirPlay 镜像',
                   '需原生投屏能力'),
-              _disabledRow(AppIcons.bolt, 'H.265 硬件解码 / 内嵌播放器',
-                  '当前实时画面为快照轮询；内嵌 RTSP 播放器需原生插件'),
-              _disabledRow(AppIcons.pip, '悬浮播放器', '依赖内嵌播放器'),
-              _disabledRow(AppIcons.timeline, 'Smart Timeline 变速回放',
-                  '已提供真实录像片段列表，变速回放需原生播放器'),
+              _disabledRow(AppIcons.pip, '悬浮播放器', '依赖系统画中画能力'),
+              _disabledRow(AppIcons.bolt, 'RTSP / H.265 原生播放器',
+                  '当前为 MJPEG 连续流与快照轮询；RTSP 解码需原生插件'),
             ]),
             const _Section('管理与诊断'),
             _group(<Widget>[
@@ -105,6 +115,9 @@ class SettingsPage extends StatelessWidget {
                   '添加设备、录像计划、推送通知等高级配置',
                   () => openExternalUrl(context, state.webUiUrl(),
                       label: 'SS 网页端')),
+              _linkRow(AppIcons.bolt, '画面链路诊断',
+                  '实测 GetSnapshot / Cookie / 流凭证，显示 NAS 真实响应',
+                  () => _showMediaDiagnostic(context, state)),
               _linkRow(AppIcons.info, 'API 能力诊断',
                   'SYNO.API.Info 返回 ${state.apiInfo.length} 个接口',
                   () => _showApiInfo(context, state)),
@@ -168,6 +181,40 @@ class SettingsPage extends StatelessWidget {
                     style: TextStyle(fontSize: 11, color: AppColors.sub)),
               ),
       );
+
+  Future<void> _showMediaDiagnostic(
+      BuildContext context, AppState state) async {
+    String msg;
+    if (!state.isLoggedIn) {
+      msg = '尚未登录，请先连接 NAS。';
+    } else if (state.cameras.isEmpty) {
+      msg = '尚未读取到摄像机，请先点「重新读取 NAS 全部数据」。';
+    } else {
+      msg = await state.testSnapshot(state.cameras.first);
+    }
+    if (!context.mounted) return;
+    final cam = state.cameras.isEmpty ? null : state.cameras.first;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('画面链路诊断'),
+        content: SingleChildScrollView(
+          child: Text(
+            '$msg\n\n'
+            '会话 Cookie：${state.cookieHeader.isEmpty ? '未注入' : '已注入'}\n'
+            '流凭证：${cam == null ? '未读取' : (cam.canStream ? '已获取' : '未返回')}\n'
+            'NAS API 能力：${state.apiInfo.length} 个接口',
+            style: const TextStyle(fontSize: 11.5),
+          ),
+        ),
+        actions: <Widget>[
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('关闭')),
+        ],
+      ),
+    );
+  }
 
   void _showApiInfo(BuildContext context, AppState state) {
     final entries = state.apiInfo.entries.toList();

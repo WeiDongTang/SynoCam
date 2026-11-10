@@ -29,3 +29,7 @@ synocam/.dart_tool/flutter_gen/
 
 # 构建产物（由 CI artifact 分发，不入库）
 *.ipa
+
+# 旧的本地中间交付物（仅为一次性快照，不入库）
+SynoCam-real-data.patch
+SynoCam-real-data.zip

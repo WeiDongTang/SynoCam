@@ -110,6 +110,7 @@ class AppPreferences {
   static const String _kHardwareDecode = 'pref.hw_decode';
   static const String _kPip = 'pref.pip';
   static const String _kSmartTimeline = 'pref.smart_timeline';
+  static const String _kStreamMode = 'pref.stream_mode';
 
   SharedPreferences get _p => _store._p;
 
@@ -156,5 +157,13 @@ class AppPreferences {
   Future<void> setSmartTimeline(bool v) async {
     await _store.init();
     await _p.setBool(_kSmartTimeline, v);
+  }
+
+  /// true = 优先 MJPEG 连续流（需 NAS 返回 StmKey），失败自动降级快照轮询；
+  /// false = 只用 Camera/GetSnapshot 快照轮询。
+  bool get streamMode => _p.getBool(_kStreamMode) ?? true;
+  Future<void> setStreamMode(bool v) async {
+    await _store.init();
+    await _p.setBool(_kStreamMode, v);
   }
 }

@@ -75,5 +75,10 @@ class MediaRepository {
 
   Future<void> deleteRecording(String id) => _client.deleteRecording(id);
 
+  /// 下载真实录像片段字节，供 App 内播放器使用（不再默认跳浏览器）。
+  Future<RecordingFile> downloadRecording(Recording r) =>
+      _client.downloadRecording(r);
+
+  /// 仅用于「复制链接」等用户主动操作。
   String downloadUrl(String id) => _client.recordingDownloadUrl(id);
 }

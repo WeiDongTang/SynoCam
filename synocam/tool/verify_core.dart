@@ -8,6 +8,7 @@
 // 真实执行 URL 构造 / 响应解析 / 错误码 / 模型映射 / 功能开关的逻辑断言。
 import '../lib/core/config/app_config.dart';
 import '../lib/core/config/feature_flags.dart';
+import '../lib/core/network/mjpeg_stream.dart';
 import '../lib/core/network/syno_api.dart';
 import '../lib/core/storage/secure_store.dart';
 import '../lib/data/models/camera.dart';
@@ -258,6 +259,177 @@ Future<void> main() async {
   check(rec.dateLabel.startsWith('2012'), '录像分组日期来自真实时间戳');
   check(SurveillanceEvent.fromRecording(rec).type == 'motion',
       '通知事件由真实录像派生');
+
+  print('── 流端点会话 Cookie（HTTP 465「画面加载失败」根因）──');
+  const ss = SynoSession(
+      sid: 'SID-9',
+      host: 'nas',
+      account: 'admin',
+      https: true,
+      port: 5001,
+      did: 'DID-7');
+  check(ss.cookieHeader == 'id=SID-9; did=DID-7',
+      'Cookie 同时带 id=<sid> 与 did=<设备令牌>');
+  check(
+      const SynoSession(
+              sid: 'S',
+              host: 'nas',
+              account: 'a',
+              https: false,
+              port: 5000)
+          .cookieHeader ==
+          'id=S',
+      '无设备令牌时 Cookie 仅带 id');
+  check(
+      SynoSession.fromJson(ss.toJson()).cookieHeader == 'id=SID-9; did=DID-7',
+      '会话序列化往返后 Cookie 仍可重建');
+
+  print('── 媒体字节识别（区分真画面与 DSM 错误 JSON）──');
+  check(MediaBytes.isImage(<int>[0xFF, 0xD8, 0xFF, 0xE0, 0x00]),
+      'JPEG 头识别为真图片');
+  check(MediaBytes.isImage(<int>[0x89, 0x50, 0x4E, 0x47, 0x0D]),
+      'PNG 头识别为真图片');
+  check(!MediaBytes.isImage(<int>[0x7B, 0x22, 0x65, 0x72]),
+      'JSON 开头不会误判为图片');
+  check(!MediaBytes.isImage(<int>[0xFF, 0xD8]), '过短字节不是图片');
+  check(
+      MediaBytes.looksLikeJsonError('{"error":{"code":400}}'.codeUnits),
+      'DSM 错误 JSON（HTTP 200）被识别为失败响应');
+  check(MediaBytes.looksLikeJsonError(<int>[]), '空响应视为失败');
+  check(
+      !MediaBytes.looksLikeJsonError(
+          <int>[0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]),
+      'MP4 二进制不被误判为 JSON 错误');
+  check(
+      MediaBytes.extensionFor(<int>[
+        0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D
+      ]) ==
+          '.mp4',
+      'MP4 ftyp 文件头推断 .mp4');
+  check(MediaBytes.extensionFor(<int>[0x1A, 0x45, 0xDF, 0xA3]) == '.mkv',
+      'Matroska 文件头推断 .mkv');
+  check(MediaBytes.extensionFor(<int>[0x52, 0x49, 0x46, 0x46]) == '.avi',
+      'RIFF 文件头推断 .avi');
+  check(
+      MediaBytes.extensionFor(
+              <int>[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) ==
+          '.mp4',
+      '未知格式安全回退 .mp4（video_player 可尝试打开）');
+  const rf = RecordingFile(
+      bytes: <int>[1, 2, 3],
+      extension: '.mp4',
+      source: 'id,cameraId',
+      contentType: 'video/mp4');
+  check(
+      rf.bytes.length == 3 &&
+          rf.extension == '.mp4' &&
+          rf.source.isNotEmpty &&
+          rf.contentType == 'video/mp4',
+      '真实录像文件模型携带来源与格式');
+
+  print('── MJPEG 流解析（App 内连续画面 / 回放画面）──');
+  check(indexOfBytes(<int>[1, 2, 3, 4, 5], <int>[3, 4]) == 2,
+      '字节子序列定位');
+  check(indexOfBytes(<int>[1, 2, 3], <int>[9]) == -1, '未找到返回 -1');
+  check(indexOfBytes(<int>[1, 2, 1, 2], <int>[1, 2], 1) == 2,
+      '指定起点后继续查找');
+  check(
+      boundaryFrom('multipart/x-mixed-replace; boundary=myBoundary') ==
+          'myBoundary',
+      '提取无引号 boundary');
+  check(
+      boundaryFrom('multipart/x-mixed-replace; boundary="quoted-b"') ==
+          'quoted-b',
+      '提取带引号 boundary');
+  check(boundaryFrom('image/jpeg') == '', '无 boundary 返回空串');
+
+  final jpeg = <int>[0xFF, 0xD8, 0xFF, 0x01, 0x02];
+  final part = <int>[
+    ...'--B\r\nContent-Type: image/jpeg\r\nContent-Length: 5\r\n\r\n'
+        .codeUnits,
+    ...jpeg,
+    ...'\r\n--B\r\nContent-Type: image/jpeg\r\nContent-Length: 5\r\n\r\n'
+        .codeUnits,
+    ...jpeg,
+    ...'\r\n--B--\r\n'.codeUnits,
+  ];
+  final frames = await parseMjpegFrames(
+          Stream<List<int>>.fromIterable(<List<int>>[part]), 'B')
+      .toList();
+  check(frames.length == 2, 'multipart 流按 Content-Length 精确切出 2 帧');
+  check(frames.first.length == 5 && frames.first[0] == 0xFF,
+      '切出的首帧是完整 JPEG 字节');
+  check(frames.last[4] == 0x02, '第二帧字节完整');
+
+  final raw = <int>[
+    0xFF, 0xD8, 0xFF, 0xAA, 0xFF, 0xD9, // 帧 1
+    0xFF, 0xD8, 0xFF, 0xBB, 0xFF, 0xD9, // 帧 2
+  ];
+  final rawFrames = await parseRawJpegFrames(
+          Stream<List<int>>.fromIterable(<List<int>>[raw]))
+      .toList();
+  check(rawFrames.length == 2, '无 multipart 封装时按 SOI/EOI 切出 2 帧');
+  check(rawFrames[0][3] == 0xAA && rawFrames[1][3] == 0xBB,
+      '裸流两帧内容各自独立');
+
+  print('── 时间轴拖动 / App 内片段回放 ──');
+  final day = DateTime(2024, 5, 1);
+  check(TimelineMath.secondsPerDay == 86400, '一天 86400 秒');
+  check(
+      (TimelineMath.fractionOf(
+                  day.add(const Duration(hours: 6)), day) -
+              0.25)
+          .abs() <
+          1e-9,
+      '06:00 映射到 0.25');
+  check(TimelineMath.timeAt(0.5, day).hour == 12, '0.5 还原为 12:00');
+  check(
+      TimelineMath.timeLabel(DateTime(2024, 5, 1, 9, 5, 3)) == '09:05:03',
+      '时间标签补零');
+  check(TimelineMath.fractionOf(day.add(const Duration(days: 2)), day) == 1.0,
+      '越界上钳到 1');
+  check(
+      TimelineMath.fractionOf(
+              day.subtract(const Duration(hours: 5)), day) ==
+          0.0,
+      '越界下钳到 0');
+  final clip = Recording(
+    id: 'c1',
+    cameraId: 1,
+    cameraName: '前门',
+    startTime: day.add(const Duration(hours: 10)),
+    durationSeconds: 600,
+  );
+  check(clip.endTime == day.add(const Duration(hours: 10, minutes: 10)),
+      'endTime = startTime + duration');
+  check(
+      Recording(
+              id: 'c2',
+              cameraId: 1,
+              cameraName: '录制中',
+              startTime: DateTime(2024),
+              durationSeconds: 0,
+              recording: true)
+          .durationLabel ==
+          '录制中',
+      '录制中的片段不给虚假时长');
+  check(
+      TimelineMath.clipAt(<Recording>[clip],
+              day.add(const Duration(hours: 10, minutes: 5))) ==
+          clip,
+      '拖动命中片段');
+  check(
+      TimelineMath.clipAt(
+              <Recording>[clip], day.add(const Duration(hours: 11))) ==
+          null,
+      '拖动到空白处不命中');
+  check(
+      TimelineMath.nearestClip(
+              <Recording>[clip], day.add(const Duration(hours: 23))) ==
+          clip,
+      '拖动到空白时取最近的真实片段');
+  check(TimelineMath.nearestClip(<Recording>[], day) == null,
+      '无片段时返回 null（UI 显示真实空态）');
 
   print('\n✅ 全部 $_checks 项断言通过');
 }

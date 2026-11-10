@@ -3,9 +3,11 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:synocam/core/config/feature_flags.dart';
+import 'package:synocam/core/network/mjpeg_stream.dart';
 import 'package:synocam/core/network/syno_api.dart';
 import 'package:synocam/data/models/camera.dart';
 import 'package:synocam/data/models/media.dart';
+import 'package:synocam/data/models/syno_session.dart';
 
 void main() {
   group('buildSynoUrl', () {
@@ -254,6 +256,150 @@ void main() {
       expect(SynoErrorCode.isUnsupported(400), isFalse);
       expect(SynoException.fromCode(102).diagnostic.contains('错误码 102'),
           isTrue);
+    });
+  });
+
+  group('流端点鉴权与媒体字节（修复 HTTP 465 画面加载失败）', () {
+    test('会话 Cookie 同时携带 id=<sid> 与 did=<设备令牌>', () {
+      const s = SynoSession(
+          sid: 'SID-9',
+          host: 'nas',
+          account: 'admin',
+          https: true,
+          port: 5001,
+          did: 'DID-7');
+      expect(s.cookieHeader, 'id=SID-9; did=DID-7');
+      expect(SynoSession.fromJson(s.toJson()).cookieHeader,
+          'id=SID-9; did=DID-7');
+      expect(
+          const SynoSession(
+                  sid: 'S',
+                  host: 'nas',
+                  account: 'a',
+                  https: false,
+                  port: 5000)
+              .cookieHeader,
+          'id=S');
+    });
+
+    test('识别真实 JPEG/PNG，拒绝 DSM 的 JSON 错误响应', () {
+      expect(MediaBytes.isImage(<int>[0xFF, 0xD8, 0xFF, 0xE0, 0]), isTrue);
+      expect(MediaBytes.isImage(<int>[0x89, 0x50, 0x4E, 0x47, 0x0D]), isTrue);
+      expect(MediaBytes.isImage(<int>[0x7B, 0x22, 0x65, 0x72]), isFalse);
+      expect(MediaBytes.isImage(<int>[0xFF, 0xD8]), isFalse);
+      expect(
+          MediaBytes.looksLikeJsonError('{"error":{"code":400}}'.codeUnits),
+          isTrue);
+      expect(MediaBytes.looksLikeJsonError(<int>[]), isTrue);
+      expect(
+          MediaBytes.looksLikeJsonError(
+              <int>[0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]),
+          isFalse);
+    });
+
+    test('按文件头推断录像容器扩展名', () {
+      expect(
+          MediaBytes.extensionFor(<int>[
+            0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D
+          ]),
+          '.mp4');
+      expect(MediaBytes.extensionFor(<int>[0x1A, 0x45, 0xDF, 0xA3]), '.mkv');
+      expect(MediaBytes.extensionFor(<int>[0x52, 0x49, 0x46, 0x46]), '.avi');
+      expect(
+          MediaBytes.extensionFor(
+              <int>[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+          '.mp4');
+    });
+  });
+
+  group('MJPEG 流解析（App 内连续画面 / 回放）', () {
+    test('boundary 提取与字节子序列定位', () {
+      expect(
+          boundaryFrom('multipart/x-mixed-replace; boundary=myBoundary'),
+          'myBoundary');
+      expect(
+          boundaryFrom('multipart/x-mixed-replace; boundary="quoted-b"'),
+          'quoted-b');
+      expect(boundaryFrom('image/jpeg'), '');
+      expect(indexOfBytes(<int>[1, 2, 3, 4, 5], <int>[3, 4]), 2);
+      expect(indexOfBytes(<int>[1, 2, 3], <int>[9]), -1);
+      expect(indexOfBytes(<int>[1, 2, 1, 2], <int>[1, 2], 1), 2);
+    });
+
+    test('multipart 流按 Content-Length 切出完整 JPEG 帧', () async {
+      final jpeg = <int>[0xFF, 0xD8, 0xFF, 0x01, 0x02];
+      final part = <int>[
+        ...'--B\r\nContent-Type: image/jpeg\r\nContent-Length: 5\r\n\r\n'
+            .codeUnits,
+        ...jpeg,
+        ...'\r\n--B\r\nContent-Type: image/jpeg\r\nContent-Length: 5\r\n\r\n'
+            .codeUnits,
+        ...jpeg,
+        ...'\r\n--B--\r\n'.codeUnits,
+      ];
+      final frames = await parseMjpegFrames(
+              Stream<List<int>>.fromIterable(<List<int>>[part]), 'B')
+          .toList();
+      expect(frames.length, 2);
+      expect(frames.first.length, 5);
+      expect(frames.first[0], 0xFF);
+      expect(frames.last[4], 0x02);
+    });
+
+    test('裸 JPEG 流按 SOI/EOI 切帧', () async {
+      final raw = <int>[
+        0xFF, 0xD8, 0xFF, 0xAA, 0xFF, 0xD9,
+        0xFF, 0xD8, 0xFF, 0xBB, 0xFF, 0xD9,
+      ];
+      final frames = await parseRawJpegFrames(
+              Stream<List<int>>.fromIterable(<List<int>>[raw]))
+          .toList();
+      expect(frames.length, 2);
+      expect(frames[0][3], 0xAA);
+      expect(frames[1][3], 0xBB);
+    });
+  });
+
+  group('时间轴拖动 / App 内片段回放', () {
+    final day = DateTime(2024, 5, 1);
+    final clip = Recording(
+      id: 'c1',
+      cameraId: 1,
+      cameraName: '前门',
+      startTime: day.add(const Duration(hours: 10)),
+      durationSeconds: 600,
+    );
+
+    test('24 小时与 [0,1] 双向换算', () {
+      expect(TimelineMath.secondsPerDay, 86400);
+      expect(TimelineMath.fractionOf(day.add(const Duration(hours: 6)), day),
+          closeTo(0.25, 1e-9));
+      expect(TimelineMath.timeAt(0.5, day).hour, 12);
+      expect(TimelineMath.timeLabel(DateTime(2024, 5, 1, 9, 5, 3)),
+          '09:05:03');
+      expect(TimelineMath.fractionOf(day.add(const Duration(days: 2)), day),
+          1.0);
+      expect(
+          TimelineMath.fractionOf(
+              day.subtract(const Duration(hours: 5)), day),
+          0.0);
+    });
+
+    test('拖动定位命中 / 回退到最近真实片段', () {
+      expect(clip.endTime, day.add(const Duration(hours: 10, minutes: 10)));
+      expect(
+          TimelineMath.clipAt(<Recording>[clip],
+              day.add(const Duration(hours: 10, minutes: 5))),
+          clip);
+      expect(
+          TimelineMath.clipAt(
+              <Recording>[clip], day.add(const Duration(hours: 11))),
+          isNull);
+      expect(
+          TimelineMath.nearestClip(
+              <Recording>[clip], day.add(const Duration(hours: 23))),
+          clip);
+      expect(TimelineMath.nearestClip(<Recording>[], day), isNull);
     });
   });
 }
