@@ -368,8 +368,6 @@ class _PlaybackPageState extends State<PlaybackPage> {
       case _PlaybackPhase.failed:
         return _errorView(state);
     }
-    // 枚举已穷举，此分支理论不可达；保留以满足返回值类型检查。
-    return _busy('正在准备画面…');
   }
 
   Widget _busy(String text) => Center(
