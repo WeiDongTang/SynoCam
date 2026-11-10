@@ -668,8 +668,10 @@ class SynoClient {
   /// 下载真实录像片段。SS 各版本的 Download 参数不一致，做多重回退并
   /// 校验响应确实是媒体文件（而不是 {"error":{"code":400}} 这样的 JSON）。
   Future<RecordingFile> downloadRecording(Recording r) async {
+    // 与回放页的 MJPEG 回放流使用同一段真实跨度（Recording.playbackEndTime），
+    // 避免下载取 60 秒而回放流只取 1 秒导致画面内容与标注时间不一致。
     final from = r.startTime.millisecondsSinceEpoch ~/ 1000;
-    final to = from + (r.durationSeconds > 0 ? r.durationSeconds : 60);
+    final to = r.playbackEndTime.millisecondsSinceEpoch ~/ 1000;
     final recipes = <Map<String, String>>[
       <String, String>{
         'id': r.id,

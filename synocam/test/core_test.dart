@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:synocam/core/config/feature_flags.dart';
 import 'package:synocam/core/network/mjpeg_stream.dart';
 import 'package:synocam/core/network/syno_api.dart';
+import 'package:synocam/core/utils/time_sync.dart';
 import 'package:synocam/data/models/camera.dart';
 import 'package:synocam/data/models/media.dart';
 import 'package:synocam/data/models/syno_session.dart';
@@ -369,6 +370,112 @@ void main() {
       expect(frames.length, 2);
       expect(frames[0][3], 0xAA);
       expect(frames[1][3], 0xBB);
+    });
+  });
+
+  group('流解析跨网络块边界（修复实时/回放卡顿与丢帧）', () {
+    List<List<int>> splitInto(List<int> src, int size) {
+      final out = <List<int>>[];
+      for (var i = 0; i < src.length; i += size) {
+        final end = i + size > src.length ? src.length : i + size;
+        out.add(src.sublist(i, end));
+      }
+      return out;
+    }
+
+    test('multipart 流被拆成单字节块仍能切出完整帧', () async {
+      final jpeg = <int>[0xFF, 0xD8, 0xFF, 0x01, 0x02];
+      final part = <int>[
+        ...'--B\r\nContent-Length: 5\r\n\r\n'.codeUnits,
+        ...jpeg,
+        ...'\r\n--B\r\nContent-Length: 5\r\n\r\n'.codeUnits,
+        ...jpeg,
+        ...'\r\n--B--\r\n'.codeUnits,
+      ];
+      for (final size in <int>[1, 3, 7]) {
+        final frames = await parseMjpegFrames(
+                Stream<List<int>>.fromIterable(splitInto(part, size)), 'B')
+            .toList();
+        expect(frames.length, 2, reason: '$size 字节块');
+        expect(frames.first, jpeg);
+        expect(frames.last, jpeg);
+      }
+    });
+
+    test('无 Content-Length 时跨块不把帧数据误当 preamble 丢弃', () async {
+      final jpeg = <int>[0xFF, 0xD8, 0xFF, 0x01, 0x02];
+      final part = <int>[
+        ...'--B\r\nContent-Type: image/jpeg\r\n\r\n'.codeUnits,
+        ...jpeg,
+        ...'\r\n--B\r\nContent-Type: image/jpeg\r\n\r\n'.codeUnits,
+        ...jpeg,
+        ...'\r\n--B--\r\n'.codeUnits,
+      ];
+      final frames = await parseMjpegFrames(
+              Stream<List<int>>.fromIterable(splitInto(part, 5)), 'B')
+          .toList();
+      expect(frames.length, 2);
+    });
+
+    test('裸 JPEG 流被拆成单字节块仍按 SOI/EOI 组帧', () async {
+      final raw = <int>[
+        0xFF,
+        0xD8,
+        0xFF,
+        0xAA,
+        0xFF,
+        0xD9,
+        0xFF,
+        0xD8,
+        0xFF,
+        0xBB,
+        0xFF,
+        0xD9,
+      ];
+      final frames = await parseRawJpegFrames(
+              Stream<List<int>>.fromIterable(splitInto(raw, 1)))
+          .toList();
+      expect(frames.length, 2);
+      expect(frames[0][3], 0xAA);
+      expect(frames[1][3], 0xBB);
+    });
+
+    test('流客户端上限帧率可配置（网络快于解码时丢过期帧）', () {
+      expect(MjpegStreamClient(url: 'http://nas/x').maxFps, 20);
+      expect(MjpegStreamClient(url: 'http://nas/x', maxFps: 0).maxFps, 0);
+    });
+  });
+
+  group('录像时长与 NAS 时间校准（修复画面时间不对）', () {
+    test('缺 stopTime 时从显式字段 / 录制中状态推导真实时长', () {
+      final r = Recording.fromEventJson(<String, dynamic>{
+        'id': 1,
+        'cameraId': 1,
+        'startTime': 1330640410,
+        'duration': 45,
+        'status': 2,
+      }, const <int, String>{});
+      expect(r.durationSeconds, 45);
+      expect(r.playbackDurationSeconds, 45);
+      expect(r.playbackEndTime.difference(r.startTime).inSeconds, 45);
+      final unknown = Recording(
+          id: 'x',
+          cameraId: 1,
+          cameraName: 'c',
+          startTime: DateTime(2024, 5, 1, 9, 0),
+          durationSeconds: 0);
+      expect(unknown.playbackDurationSeconds, 60);
+      expect(unknown.playbackEndTime.minute, 1);
+    });
+
+    test('时间校准只改显示，方向与非整点文案正确', () {
+      final t = DateTime(2026, 11, 10, 14, 30, 5);
+      expect(const TimeSync().clock(t), '14:30:05');
+      expect(const TimeSync(-480).clock(t), '06:30:05');
+      expect(const TimeSync(480).full(t), '2026-11-10 22:30:05');
+      expect(const TimeSync(90).offsetLabel, '+1 小时 30 分钟');
+      expect(const TimeSync(-480).compare(t), '本机 14:30:05 · NAS 06:30:05');
+      expect(TimelineMath.dateTimeLabel(t), '2026-11-10 14:30:05');
     });
   });
 

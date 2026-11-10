@@ -13,6 +13,7 @@ import '../../data/models/camera.dart';
 import '../../data/models/media.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
+import '../../widgets/live_clock.dart';
 import '../../widgets/live_snapshot.dart';
 import '../cameras/camera_edit_page.dart';
 import '../playback/playback_page.dart';
@@ -97,7 +98,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 26),
         children: <Widget>[
-          _bigImage(cam),
+          _bigImage(context, state, cam),
           const SizedBox(height: 10),
           _streamActions(context, state, cam),
           const SectionLabel('快捷操作'),
@@ -113,7 +114,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
     );
   }
 
-  Widget _bigImage(Camera cam) => ClipRRect(
+  Widget _bigImage(BuildContext context, AppState state, Camera cam) =>
+      ClipRRect(
         borderRadius: BorderRadius.circular(16),
         child: AspectRatio(
           aspectRatio: 16 / 9,
@@ -160,9 +162,11 @@ class _SingleViewPageState extends State<SingleViewPage> {
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
                             color: Colors.white)),
-                    Text(TimeOfDay.now().format(context),
-                        style: const TextStyle(
-                            fontSize: 10, color: Colors.white70)),
+                    LiveClock(
+                      offsetMinutes: state.timeOffsetMinutes,
+                      style:
+                          const TextStyle(fontSize: 10, color: Colors.white70),
+                    ),
                   ],
                 ),
               ),
@@ -429,7 +433,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
           children: <Widget>[
             Text('00:00',
                 style: TextStyle(fontSize: 10, color: AppColors.faint)),
-            Text('拖动定位 ${TimelineMath.timeLabel(t)}',
+            Text('拖动定位 ${state.timeLabel(t)}',
                 style:
                     const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
             Text('24:00',
@@ -442,9 +446,9 @@ class _SingleViewPageState extends State<SingleViewPage> {
         ),
         _clipTrack(context, cam, clips, todayStart),
         const SizedBox(height: 10),
-        _scrubCard(context, cam, t, hit),
+        _scrubCard(context, state, cam, t, hit),
         const SizedBox(height: 10),
-        ...clips.take(8).map((r) => _clipTile(context, cam, r)),
+        ...clips.take(8).map((r) => _clipTile(context, state, cam, r)),
         const SizedBox(height: 6),
         Text(
           '拖动时间轴定位到任意时刻，点「回放」进入 App 内播放器；'
@@ -470,9 +474,10 @@ class _SingleViewPageState extends State<SingleViewPage> {
             child: Stack(
               children: clips.map((r) {
                 final left = TimelineMath.fractionOf(r.startTime, dayStart);
-                final width = (r.durationSeconds / TimelineMath.secondsPerDay)
-                    .clamp(0.004, 1.0)
-                    .toDouble();
+                final width =
+                    (r.playbackDurationSeconds / TimelineMath.secondsPerDay)
+                        .clamp(0.004, 1.0)
+                        .toDouble();
                 return Positioned(
                   left: w * left,
                   width: w * width,
@@ -501,12 +506,12 @@ class _SingleViewPageState extends State<SingleViewPage> {
         },
       );
 
-  Widget _scrubCard(
-          BuildContext context, Camera cam, DateTime t, Recording? hit) =>
+  Widget _scrubCard(BuildContext context, AppState state, Camera cam,
+          DateTime t, Recording? hit) =>
       Card(
         child: ListTile(
           leading: const BadgeIcon(AppIcons.timeline, tone: IconTone.blue),
-          title: Text('定位到 ${TimelineMath.timeLabel(t)}',
+          title: Text('定位到 ${state.timeLabel(t)}',
               style:
                   const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
           subtitle: Text(
@@ -523,14 +528,16 @@ class _SingleViewPageState extends State<SingleViewPage> {
         ),
       );
 
-  Widget _clipTile(BuildContext context, Camera cam, Recording r) => Card(
+  Widget _clipTile(
+          BuildContext context, AppState state, Camera cam, Recording r) =>
+      Card(
         margin: const EdgeInsets.only(bottom: 7),
         child: ListTile(
           dense: true,
           leading: const AppIcon(AppIcons.play, size: 17),
           title: Text(r.eventType, style: const TextStyle(fontSize: 12.5)),
           subtitle: Text(
-              '${TimelineMath.timeLabel(r.startTime)} · ${r.durationLabel}'
+              '${state.timeShort(r.startTime)} · ${r.durationLabel}'
               '${r.locked ? ' · 已锁定' : ''}',
               style: TextStyle(fontSize: 10, color: AppColors.faint)),
           trailing: const AppIcon(AppIcons.chevron, size: 15),

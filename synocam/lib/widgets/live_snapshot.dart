@@ -11,6 +11,15 @@
 //      出错或 6 秒无帧自动降级；
 //   2) Camera/GetSnapshot 快照轮询 ——保底，多版本/多参数回退。
 //
+// 流畅度（修复实时画面卡顿）：
+//   - 每帧只更新 ValueNotifier + 局部画面区（RepaintBoundary 隔离），
+//     不再 setState 重建整个组件树；
+//   - Image.memory 指定 cacheWidth 按显示尺寸解码下采样，避免按原始
+//     1080p/4K 分辨率逐帧解码；
+//   - MjpegStreamClient 限制帧率，网络快于解码时丢过期帧；
+//   - 多画面网格可关闭连续流（allowStream），避免 N 路流并发解码堆积；
+//   - 快照轮询改为「本次完成后再排下一次」，不与网络往返重叠。
+//
 // 所有失败显示真实 HTTP 状态 / DSM 错误码，绝不显示占位假画面。
 import 'dart:async';
 import 'dart:typed_data';
@@ -32,11 +41,19 @@ class LiveSnapshot extends StatefulWidget {
     required this.camera,
     this.fit = BoxFit.cover,
     this.paused = false,
+    this.allowStream = true,
+    this.maxFps = 20,
   });
 
   final Camera camera;
   final BoxFit fit;
   final bool paused;
+
+  /// 多画面网格可置 false，强制走低开销的快照轮询。
+  final bool allowStream;
+
+  /// 连续流上限帧率；多画面时调低可显著降低解码压力。
+  final int maxFps;
 
   @override
   State<LiveSnapshot> createState() => _LiveSnapshotState();
@@ -46,8 +63,10 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
   StreamSubscription<Uint8List>? _sub;
   Timer? _pollTimer;
   Timer? _watchdog;
+  bool _polling = false;
 
-  Uint8List? _frame;
+  /// 每帧只更新它，画面区局部重绘，不触发整棵组件树重建。
+  final ValueNotifier<Uint8List?> _frames = ValueNotifier<Uint8List?>(null);
   String? _error;
   String? _fallbackNote;
   bool _busy = false;
@@ -66,7 +85,13 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
   @override
   void didUpdateWidget(covariant LiveSnapshot old) {
     super.didUpdateWidget(old);
-    if (old.camera.id != widget.camera.id || old.paused != widget.paused) {
+    if (old.camera.id != widget.camera.id) {
+      _frames.value = null; // 切摄像机不留旧画面
+    }
+    if (old.camera.id != widget.camera.id ||
+        old.paused != widget.paused ||
+        old.allowStream != widget.allowStream ||
+        old.maxFps != widget.maxFps) {
       _start();
     }
   }
@@ -76,6 +101,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     _sub?.cancel();
     _pollTimer?.cancel();
     _watchdog?.cancel();
+    _frames.dispose();
     super.dispose();
   }
 
@@ -86,8 +112,11 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     _pollTimer = null;
     _watchdog?.cancel();
     _watchdog = null;
+    _polling = false;
+    _busy = false;
     _fallbackNote = null;
     _error = null;
+    // 不清空上一帧：配置变更重启时画面不黑一下。
   }
 
   void _start() {
@@ -99,7 +128,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     final state = context.read<AppState>();
     _streamMode = state.prefs.streamMode;
     _pollSeconds = state.prefs.pollSeconds;
-    if (_streamMode && widget.camera.canStream) {
+    if (widget.allowStream && _streamMode && widget.camera.canStream) {
       _startStream(state);
     } else {
       _startPolling(state);
@@ -108,21 +137,18 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
 
   void _startPolling(AppState state) {
     _modeLabel = '快照';
-    _pollTimer =
-        Timer.periodic(Duration(seconds: _pollSeconds), (_) => _poll(state));
+    _polling = true;
     _poll(state);
   }
 
   Future<void> _poll(AppState state) async {
-    if (_busy || !mounted) return;
+    if (_busy || !_polling || !mounted) return;
     _busy = true;
     try {
       final bytes = await state.snapshotBytes(widget.camera);
       if (mounted) {
-        setState(() {
-          _frame = Uint8List.fromList(bytes);
-          _error = null;
-        });
+        _frames.value = Uint8List.fromList(bytes);
+        if (_error != null) setState(() => _error = null);
       }
     } catch (e) {
       // 会话失效：上报全局恢复闭环，不再无意义地反复重试快照。
@@ -133,6 +159,10 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
       if (mounted) setState(() => _error = '$e');
     } finally {
       _busy = false;
+      // 完成后再排下一次：不与网络往返重叠，避免请求排队导致画面滞后。
+      if (_polling && mounted) {
+        _pollTimer = Timer(Duration(seconds: _pollSeconds), () => _poll(state));
+      }
     }
   }
 
@@ -141,15 +171,15 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     final client = MjpegStreamClient(
       url: state.liveStreamUrl(widget.camera),
       cookie: state.cookieHeader,
+      maxFps: widget.maxFps,
     );
     _sub = client.frames().listen(
       (Uint8List frame) {
         if (!mounted) return;
         _watchdog?.cancel();
-        setState(() {
-          _frame = frame;
-          _error = null;
-        });
+        _frames.value = frame;
+        // 只有从错误恢复时才需要一次 setState，正常帧不重建组件树。
+        if (_error != null && mounted) setState(() => _error = null);
       },
       onError: (Object e) {
         if (!mounted) return;
@@ -164,7 +194,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     );
     // 流挂着但一直不出帧时也要降级，避免永久黑屏。
     _watchdog = Timer(const Duration(seconds: 6), () {
-      if (!mounted || _frame != null || _sub == null) return;
+      if (!mounted || _frames.value != null || _sub == null) return;
       _fallbackToPolling(state, '连续流 6 秒内未返回画面');
     });
   }
@@ -197,7 +227,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     if (!widget.camera.isOnline) {
       return _placeholder('摄像机已停用');
     }
-    if (_frame == null && _error != null) {
+    if (_frames.value == null && _error != null) {
       final fv = classifyFailure(_error);
       return _ErrorTile(
         message: fv.title,
@@ -208,7 +238,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
         },
       );
     }
-    if (_frame == null) {
+    if (_frames.value == null) {
       return Container(
         color: const Color(0xFF22262F),
         alignment: Alignment.center,
@@ -230,7 +260,11 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     return Stack(
       fit: StackFit.expand,
       children: <Widget>[
-        Image.memory(_frame!, fit: widget.fit, gaplessPlayback: true),
+        Positioned.fill(
+          child: RepaintBoundary(
+            child: _FrameView(notifier: _frames, fit: widget.fit),
+          ),
+        ),
         if (_fallbackNote != null)
           Positioned(
             left: 6,
@@ -238,7 +272,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
             child: _chip('$_modeLabel模式 · ${_shortNote(_fallbackNote!)}',
                 AppColors.amber),
           ),
-        if (_error != null && _frame != null)
+        if (_error != null)
           Positioned(
             right: 6,
             top: 6,
@@ -275,6 +309,39 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
                 style: const TextStyle(fontSize: 10, color: Colors.white54)),
           ],
         ),
+      );
+}
+
+/// 画面区独立子树：每帧只重建这一小块；按显示宽度下采样解码，
+/// gaplessPlayback 保证换帧不清空画面（不闪黑）。
+class _FrameView extends StatelessWidget {
+  const _FrameView({required this.notifier, required this.fit});
+
+  final ValueNotifier<Uint8List?> notifier;
+  final BoxFit fit;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (BuildContext context, BoxConstraints constraints) {
+          final dpr = MediaQuery.of(context).devicePixelRatio;
+          var cacheWidth = (constraints.maxWidth * dpr).round();
+          if (cacheWidth <= 0) cacheWidth = 960;
+          if (cacheWidth < 320) cacheWidth = 320;
+          if (cacheWidth > 1920) cacheWidth = 1920;
+          return ValueListenableBuilder<Uint8List?>(
+            valueListenable: notifier,
+            builder: (BuildContext context, Uint8List? frame, Widget? _) {
+              if (frame == null) return const SizedBox.shrink();
+              return Image.memory(
+                frame,
+                fit: fit,
+                gaplessPlayback: true,
+                cacheWidth: cacheWidth,
+                filterQuality: FilterQuality.low,
+              );
+            },
+          );
+        },
       );
 }
 

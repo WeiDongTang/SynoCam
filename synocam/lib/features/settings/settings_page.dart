@@ -10,6 +10,7 @@ import '../../core/theme/app_icons.dart';
 import '../../core/utils/launcher.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
+import '../../widgets/live_clock.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -92,6 +93,8 @@ class SettingsPage extends StatelessWidget {
                 onChanged: (v) => state.setDnd(v),
               ),
             ]),
+            const _Section('录像时间校准'),
+            _timeSyncCard(state),
             const _Section('首页模式（NAS 真实状态）'),
             _homeMode(state),
             const _Section('系统权限（真实系统状态）'),
@@ -158,6 +161,125 @@ class SettingsPage extends StatelessWidget {
       if (l[k] != null) return '${l[k]} 路上限';
     }
     return '已读取（${l.length} 个字段）';
+  }
+
+  /// 时间校准：只修正 App 内显示文字，不改写 NAS 请求时间戳。
+  /// 常见场景是 NAS 系统时区与手机不一致（例如差 8 小时），导致列表时刻
+  /// 与摄像机画面里烧录的 OSD 时间对不上。
+  Widget _timeSyncCard(AppState state) {
+    final offset = state.timeOffsetMinutes;
+    final values = <int>{
+      ...<int>[
+        -720,
+        -480,
+        -420,
+        -240,
+        -120,
+        -60,
+        -30,
+        0,
+        30,
+        60,
+        120,
+        240,
+        420,
+        480,
+        720
+      ],
+      offset,
+    }.toList()
+      ..sort();
+    String labelOf(int v) {
+      if (v == 0) return '0（未校准）';
+      final sign = v > 0 ? '+' : '-';
+      final abs = v.abs();
+      final h = abs ~/ 60;
+      final m = abs % 60;
+      if (h > 0 && m > 0) return '$sign$h 小时 $m 分';
+      if (h > 0) return '$sign$h 小时';
+      return '$sign$m 分';
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                const BadgeIcon(AppIcons.timeline),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      const Text('事件时间偏移',
+                          style: TextStyle(
+                              fontSize: 13.5, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 2),
+                      Text(state.timeOffsetLabel,
+                          style: TextStyle(fontSize: 11, color: AppColors.sub)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '若 App 里的录像时刻与摄像机画面中显示的时间不一致，可在此校准。'
+              '设置后，列表、时间轴、片段信息与回放画面上的绝对时间会一起调整；'
+              '回放画面上还会叠加片段真实起始时刻，不再只显示 00:05 这类相对时长。',
+              style: TextStyle(fontSize: 11, color: AppColors.sub),
+            ),
+            const SizedBox(height: 8),
+            LiveClock(
+              offsetMinutes: offset,
+              style: TextStyle(fontSize: 11.5, color: AppColors.blue),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: <Widget>[
+                DropdownButton<int>(
+                  value: offset,
+                  items: values
+                      .map((v) => DropdownMenuItem<int>(
+                          value: v,
+                          child: Text(labelOf(v),
+                              style: const TextStyle(fontSize: 11.5))))
+                      .toList(),
+                  onChanged: (v) => state.setTimeOffsetMinutes(v ?? 0),
+                  underline: const SizedBox.shrink(),
+                ),
+                TextButton(
+                  onPressed: () => state.setTimeOffsetMinutes(0),
+                  child: const Text('归零', style: TextStyle(fontSize: 11)),
+                ),
+                TextButton(
+                  onPressed: () => state.setTimeOffsetMinutes(-480),
+                  child: const Text('-8 小时', style: TextStyle(fontSize: 11)),
+                ),
+                TextButton(
+                  onPressed: () => state.setTimeOffsetMinutes(480),
+                  child: const Text('+8 小时', style: TextStyle(fontSize: 11)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '注意：校准只作用于显示文字，Event/Query、Recording/Download、'
+              'VideoStreaming 等请求仍使用 NAS 原始时间戳，因此不会影响已能'
+              '正常回放的片段。若整台 NAS 时间不准，建议在 DSM 控制面板里'
+              '校准系统时间或开启 NTP 自动同步。',
+              style: TextStyle(fontSize: 10, color: AppColors.faint),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _homeMode(AppState state) => Card(

@@ -11,6 +11,7 @@ import '../lib/core/config/feature_flags.dart';
 import '../lib/core/network/mjpeg_stream.dart';
 import '../lib/core/network/syno_api.dart';
 import '../lib/core/storage/secure_store.dart';
+import '../lib/core/utils/time_sync.dart';
 import '../lib/data/models/camera.dart';
 import '../lib/data/models/media.dart';
 import '../lib/data/models/syno_session.dart';
@@ -260,6 +261,45 @@ Future<void> main() async {
   check(rec.dateLabel.startsWith('2012'), '录像分组日期来自真实时间戳');
   check(SurveillanceEvent.fromRecording(rec).type == 'motion', '通知事件由真实录像派生');
 
+  final noStop = Recording.fromEventJson(<String, dynamic>{
+    'id': 501,
+    'cameraId': 1,
+    'startTime': 1330640410,
+    'duration': 45,
+    'status': 2,
+  }, const <int, String>{});
+  check(noStop.durationSeconds == 45,
+      '缺 stopTime 时从显式 duration 字段取真实时长（不再退化为 0）');
+  final recordingNow = Recording.fromEventJson(<String, dynamic>{
+    'id': 502,
+    'cameraId': 1,
+    'startTime': DateTime.now()
+            .subtract(const Duration(seconds: 30))
+            .millisecondsSinceEpoch ~/
+        1000,
+    'status': 1,
+  }, const <int, String>{});
+  check(recordingNow.durationSeconds >= 29, '仍在录制且无结束时间时用「此刻 - 开始」得到真实已录时长');
+  check(
+      noStop.playbackDurationSeconds == 45 &&
+          noStop.playbackEndTime.difference(noStop.startTime).inSeconds == 45,
+      '回放跨度与结束时刻由真实时长推导，下载与回放流一致');
+  final unknown = Recording(
+      id: 'x',
+      cameraId: 1,
+      cameraName: 'c',
+      startTime: DateTime(2024, 5, 1, 9, 0),
+      durationSeconds: 0);
+  check(
+      unknown.playbackDurationSeconds == 60 &&
+          unknown.playbackEndTime.hour == 9 &&
+          unknown.playbackEndTime.minute == 1,
+      '时长完全未知时回放统一取 60 秒，不再只请求 1 秒画面');
+  check(
+      TimelineMath.dateTimeLabel(DateTime(2024, 5, 1, 9, 5, 3)) ==
+          '2024-05-01 09:05:03',
+      '完整日期时间标签避免跨天/时区混淆');
+
   print('── 流端点会话 Cookie（HTTP 465「画面加载失败」根因）──');
   const ss = SynoSession(
       sid: 'SID-9',
@@ -369,6 +409,61 @@ Future<void> main() async {
           .toList();
   check(rawFrames.length == 2, '无 multipart 封装时按 SOI/EOI 切出 2 帧');
   check(rawFrames[0][3] == 0xAA && rawFrames[1][3] == 0xBB, '裸流两帧内容各自独立');
+
+  List<List<int>> splitInto(List<int> src, int size) {
+    final out = <List<int>>[];
+    for (var i = 0; i < src.length; i += size) {
+      final end = i + size > src.length ? src.length : i + size;
+      out.add(src.sublist(i, end));
+    }
+    return out;
+  }
+
+  // 增量解析器的核心回归：boundary / 头 / 帧数据被网络拆到任意块边界，
+  // 仍必须切出完整帧（旧实现在此场景会重复扫描甚至丢帧）。
+  for (final size in <int>[1, 7, 13]) {
+    final f = await parseMjpegFrames(
+            Stream<List<int>>.fromIterable(splitInto(part, size)), 'B')
+        .toList();
+    check(f.length == 2 && f.first.length == 5 && f.last[4] == 0x02,
+        'MJPEG 跨 $size 字节网络块边界仍切出 2 帧完整 JPEG');
+    final r = await parseRawJpegFrames(
+            Stream<List<int>>.fromIterable(splitInto(raw, size)))
+        .toList();
+    check(r.length == 2 && r[0][3] == 0xAA && r[1][3] == 0xBB,
+        '裸 JPEG 流跨 $size 字节块边界仍切出 2 帧');
+  }
+  final noLen = <int>[
+    ...'--B\r\nContent-Type: image/jpeg\r\n\r\n'.codeUnits,
+    ...jpeg,
+    ...'\r\n--B\r\nContent-Type: image/jpeg\r\n\r\n'.codeUnits,
+    ...jpeg,
+    ...'\r\n--B--\r\n'.codeUnits,
+  ];
+  final noLenFrames = await parseMjpegFrames(
+          Stream<List<int>>.fromIterable(splitInto(noLen, 5)), 'B')
+      .toList();
+  check(noLenFrames.length == 2, '无 Content-Length 时按 boundary 跨块切帧');
+  final bigFrame = <int>[
+    0xFF,
+    0xD8,
+    0xFF,
+    ...List<int>.filled(70000, 0x37),
+    0xFF,
+    0xD9
+  ];
+  final bigPart = <int>[
+    ...'--B\r\nContent-Length: ${bigFrame.length}\r\n\r\n'.codeUnits,
+    ...bigFrame,
+    ...'\r\n--B--\r\n'.codeUnits,
+  ];
+  final bigFrames = await parseMjpegFrames(
+          Stream<List<int>>.fromIterable(splitInto(bigPart, 4096)), 'B')
+      .toList();
+  check(bigFrames.length == 1 && bigFrames.first.length == bigFrame.length,
+      '大帧跨块 + 缓冲区紧凑化后字节完整（不再 O(n²) 搬移）');
+  check(MjpegStreamClient(url: 'http://nas/x', maxFps: 15).maxFps == 15,
+      '流客户端可配置上限帧率，网络快于解码时丢过期帧');
 
   print('── 时间轴拖动 / App 内片段回放 ──');
   final day = DateTime(2024, 5, 1);
@@ -571,6 +666,23 @@ Future<void> main() async {
           .isValid,
       '空地址视为无效，不预填');
   check(LastConnection.fromJson(<String, dynamic>{}).https, '缺失字段安全默认 HTTPS');
+
+  print('── NAS 时间展示校准（修复录像画面时间不对）──');
+  final t0 = DateTime(2026, 11, 10, 14, 30, 5);
+  check(const TimeSync().clock(t0) == '14:30:05', '零偏移时显示 NAS 原始解析时刻');
+  check(const TimeSync(-480).clock(t0) == '06:30:05', '-8 小时校准把显示时刻对齐摄像机 OSD');
+  check(const TimeSync(480).clock(t0) == '22:30:05', '+8 小时校准方向正确');
+  check(const TimeSync(-480).full(t0) == '2026-11-10 06:30:05', '完整日期时间标签应用校准');
+  check(const TimeSync(-480).short(t0) == '11-10 06:30:05', '短标签应用校准');
+  check(const TimeSync(0).offsetLabel.contains('未校准'), '零偏移提示未校准');
+  check(const TimeSync(-480).offsetLabel == '-8 小时', '偏移文案可读');
+  check(const TimeSync(90).offsetLabel == '+1 小时 30 分钟', '非整点偏移文案可读');
+  check(const TimeSync(-480).compare(t0).contains('本机 14:30:05 · NAS 06:30:05'),
+      '设置页对照同时给出本机与换算后 NAS 时刻');
+  check(
+      TimeSync.formatClock(t0) == '14:30:05' &&
+          TimeSync.formatFull(t0) == '2026-11-10 14:30:05',
+      '静态格式化方法可直接复用');
 
   print('\n✅ 全部 $_checks 项断言通过');
 }

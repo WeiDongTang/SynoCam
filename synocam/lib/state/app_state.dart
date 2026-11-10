@@ -11,6 +11,7 @@ import '../core/network/syno_api.dart';
 import '../core/network/syno_client.dart';
 import '../core/platform/permissions.dart';
 import '../core/storage/persistent_store.dart';
+import '../core/utils/time_sync.dart';
 import '../data/models/camera.dart';
 import '../data/models/media.dart';
 import '../data/models/syno_session.dart';
@@ -59,6 +60,17 @@ class AppState extends ChangeNotifier {
   }
 
   AppPreferences get prefs => _prefs;
+
+  // ── 时间展示校准（只改显示，不改写 NAS 请求时间戳）──
+  int get timeOffsetMinutes => _prefs.timeOffsetMinutes;
+  TimeSync get timeSync => TimeSync(timeOffsetMinutes);
+
+  DateTime displayTime(DateTime raw) => timeSync.display(raw);
+  String timeLabel(DateTime raw) => timeSync.clock(raw);
+  String timeFull(DateTime raw) => timeSync.full(raw);
+  String timeShort(DateTime raw) => timeSync.short(raw);
+
+  String get timeOffsetLabel => timeSync.offsetLabel;
 
   bool _bootstrapped = false;
   bool get bootstrapped => _bootstrapped;
@@ -509,6 +521,12 @@ class AppState extends ChangeNotifier {
 
   Future<void> setSmartTimeline(bool v) async {
     await _prefs.setSmartTimeline(v);
+    notifyListeners();
+  }
+
+  /// 调整 NAS 时间展示偏移后刷新全 UI；已在播放的录像会在下一帧对齐。
+  Future<void> setTimeOffsetMinutes(int v) async {
+    await _prefs.setTimeOffsetMinutes(v);
     notifyListeners();
   }
 

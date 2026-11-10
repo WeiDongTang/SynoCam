@@ -120,6 +120,7 @@ class AppPreferences {
   static const String _kStreamMode = 'pref.stream_mode';
   static const String _kLastConnection = 'auth.last_connection';
   static const String _kSessionExpired = 'auth.session_expired';
+  static const String _kTimeOffsetMinutes = 'pref.time_offset_minutes';
 
   SharedPreferences get _p => _store._p;
 
@@ -174,6 +175,16 @@ class AppPreferences {
   Future<void> setStreamMode(bool v) async {
     await _store.init();
     await _p.setBool(_kStreamMode, v);
+  }
+
+  /// NAS 时间展示校准偏移（分钟）。只影响 UI 展示文字，不改写请求时间戳。
+  int get timeOffsetMinutes => _p.getInt(_kTimeOffsetMinutes) ?? 0;
+  Future<void> setTimeOffsetMinutes(int v) async {
+    await _store.init();
+    var minutes = v;
+    if (minutes < -720) minutes = -720;
+    if (minutes > 720) minutes = 720;
+    await _p.setInt(_kTimeOffsetMinutes, minutes);
   }
 
   /// 上次连接的非敏感参数。注意：clear() 不会删除它，用户主动退出后再次

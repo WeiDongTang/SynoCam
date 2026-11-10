@@ -8,6 +8,14 @@
 //  3. 都不支持时展示真实 DSM 诊断与片段信息，绝不伪造画面；
 //     「复制链接 / 网页端」只作为用户主动点击的兜底入口。
 //
+// 流畅度与闪烁修复：
+//  - video_player 的进度回调不再触发整页 setState（旧实现每秒重建整棵
+//    ListView，画面区跟着重绘，表现为「一秒闪一次」），改为 ValueNotifier
+//    局部更新进度条与时钟；
+//  - MJPEG 回放画面开启 gaplessPlayback 并按显示宽度下采样解码，换帧不黑屏；
+//  - 画面上叠加录像真实绝对时间（片段开始时刻 + 播放进度），而不是只显示
+//    00:05 这类相对时长，避免与 NAS/摄像机 OSD 时间对不上。
+//
 // 说明：公开 SS Web API 的「按时间导出录像」(RangeExport) 是异步任务且要求
 // 片段录制完成，无法用于实时拖动；故以片段文件 + 本地播放器实现真实回放。
 import 'dart:async';
@@ -53,7 +61,14 @@ class PlaybackPage extends StatefulWidget {
 class _PlaybackPageState extends State<PlaybackPage> {
   VideoPlayerController? _controller;
   StreamSubscription<Uint8List>? _frameSub;
-  Uint8List? _mjpegFrame;
+
+  /// 每帧/每次进度回调只更新这几个 notifier，画面区与进度条局部重绘，
+  /// 绝不重建整页（这是「一秒闪一次」的根因）。
+  final ValueNotifier<Uint8List?> _mjpegFrames =
+      ValueNotifier<Uint8List?>(null);
+  final ValueNotifier<double> _videoProgress = ValueNotifier<double>(0);
+  final ValueNotifier<Duration> _videoPosition =
+      ValueNotifier<Duration>(Duration.zero);
 
   late Recording _active;
   late DateTime _dayStart;
@@ -67,7 +82,6 @@ class _PlaybackPageState extends State<PlaybackPage> {
   String _sourceLabel = '';
 
   double _fraction = 0; // 24 小时时间轴位置
-  double _videoFraction = 0; // 片段内播放进度
   double _speed = 1.0;
 
   Directory? _tempDir;
@@ -97,6 +111,9 @@ class _PlaybackPageState extends State<PlaybackPage> {
     _frameSub?.cancel();
     _controller?.removeListener(_onVideoTick);
     _controller?.dispose();
+    _mjpegFrames.dispose();
+    _videoProgress.dispose();
+    _videoPosition.dispose();
     try {
       _tempDir?.deleteSync(recursive: true);
     } catch (_) {
@@ -114,10 +131,11 @@ class _PlaybackPageState extends State<PlaybackPage> {
       await c.dispose();
     }
     _controller = null;
-    _mjpegFrame = null;
+    _mjpegFrames.value = null;
+    _videoProgress.value = 0;
+    _videoPosition.value = Duration.zero;
     _videoReady = false;
     _playing = false;
-    _videoFraction = 0;
   }
 
   Future<void> _load(AppState state) async {
@@ -170,21 +188,23 @@ class _PlaybackPageState extends State<PlaybackPage> {
     }
 
     // 路径 2：MJPEG 回放流（部分 SS 版本支持 startTime/endTime）。
+    // 与 Recording/Download 使用同一段真实时间跨度，避免「下载取 60 秒、
+    // 回放流只取 1 秒」造成画面内容与标注时间不一致。
     try {
       final from = _active.startTime.millisecondsSinceEpoch ~/ 1000;
-      final to = _active.endTime.millisecondsSinceEpoch ~/ 1000;
+      final to = _active.playbackEndTime.millisecondsSinceEpoch ~/ 1000;
       final url =
           state.liveStreamUrl(widget.camera, startTime: from, endTime: to);
-      final client = MjpegStreamClient(url: url, cookie: state.cookieHeader);
+      final client =
+          MjpegStreamClient(url: url, cookie: state.cookieHeader, maxFps: 20);
       var gotFirstFrame = false;
       _frameSub = client.frames().listen(
         (Uint8List frame) {
-          gotFirstFrame = true;
-          if (mounted) {
-            setState(() {
-              _mjpegFrame = frame;
-              _phase = _PlaybackPhase.streamLive;
-            });
+          _mjpegFrames.value = frame;
+          // 只有首帧到达时切一次阶段；后续帧不触发整页 setState。
+          if (!gotFirstFrame) {
+            gotFirstFrame = true;
+            if (mounted) setState(() => _phase = _PlaybackPhase.streamLive);
           }
         },
         onError: (Object e) {
@@ -216,7 +236,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
       // 10 秒仍无帧才判定失败，避免加载阶段闪错误。
       unawaited(Future<void>.delayed(const Duration(seconds: 10)).then((_) {
         if (!mounted || _phase != _PlaybackPhase.streamPending) return;
-        if (_mjpegFrame == null) {
+        if (_mjpegFrames.value == null) {
           setState(() {
             _error ??= '回放流在 10 秒内未返回画面';
             _phase = _PlaybackPhase.failed;
@@ -236,14 +256,15 @@ class _PlaybackPageState extends State<PlaybackPage> {
     }
   }
 
+  /// 播放进度回调：只更新 notifier，绝不 setState 重建整页画面。
   void _onVideoTick() {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
+    _videoPosition.value = c.value.position;
     final total = c.value.duration.inSeconds;
-    if (total <= 0) return;
-    final pos = c.value.position.inSeconds;
-    if (mounted) {
-      setState(() => _videoFraction = (pos / total).clamp(0.0, 1.0).toDouble());
+    if (total > 0) {
+      _videoProgress.value =
+          (c.value.position.inSeconds / total).clamp(0.0, 1.0).toDouble();
     }
   }
 
@@ -261,8 +282,8 @@ class _PlaybackPageState extends State<PlaybackPage> {
   Future<void> _seekVideo(double v) async {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
+    _videoProgress.value = v;
     await c.seekTo(c.value.duration * v);
-    if (mounted) setState(() => _videoFraction = v);
   }
 
   Future<void> _onScrubEnd(double v) async {
@@ -276,7 +297,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
     }
     // 同一片段内拖动：直接 seek 到相对位置。
     if (_videoReady) {
-      final total = target.durationSeconds > 0 ? target.durationSeconds : 1;
+      final total = target.playbackDurationSeconds;
       final offset = t.difference(target.startTime).inSeconds / total;
       await _seekVideo(offset.clamp(0.0, 1.0).toDouble());
     }
@@ -311,21 +332,28 @@ class _PlaybackPageState extends State<PlaybackPage> {
         children: <Widget>[
           _videoArea(state),
           const SizedBox(height: 10),
-          _controls(),
+          _controls(state),
           const SizedBox(height: 6),
           const _SectionLabel('片段内进度（可拖动）'),
-          Slider(
-            value: _videoFraction,
-            onChanged:
-                _videoReady ? (v) => setState(() => _videoFraction = v) : null,
-            onChangeEnd: _videoReady ? (v) => _seekVideo(v) : null,
+          ValueListenableBuilder<double>(
+            valueListenable: _videoProgress,
+            builder: (BuildContext context, double progress, Widget? _) =>
+                Slider(
+              value: progress,
+              onChanged: _videoReady
+                  ? (v) {
+                      _videoProgress.value = v;
+                    }
+                  : null,
+              onChangeEnd: _videoReady ? (v) => _seekVideo(v) : null,
+            ),
           ),
           const SizedBox(height: 6),
           const _SectionLabel('今日时间轴 · 拖动定位到任意时刻'),
-          _timeline(),
+          _timeline(state),
           const SizedBox(height: 14),
           const _SectionLabel('当前片段（NAS 真实事件）'),
-          _clipInfo(),
+          _clipInfo(state),
           const SizedBox(height: 12),
           if (_sourceLabel.isNotEmpty) _sourceCard(),
           // 加载 / 等待首帧期间不显示诊断卡片，避免真实录像能播时闪过错误提示。
@@ -346,9 +374,41 @@ class _PlaybackPageState extends State<PlaybackPage> {
           aspectRatio: 16 / 9,
           child: Container(
             color: const Color(0xFF101318),
-            child: _phaseContent(state),
+            child: Stack(
+              fit: StackFit.expand,
+              children: <Widget>[
+                _phaseContent(state),
+                if (_phase == _PlaybackPhase.video ||
+                    _phase == _PlaybackPhase.streamPending ||
+                    _phase == _PlaybackPhase.streamLive)
+                  Positioned(top: 9, right: 10, child: _timeOsd(state)),
+              ],
+            ),
           ),
         ),
+      );
+
+  /// 画面上叠加「录像真实绝对时间」，而不只是 00:05 这类相对时长。
+  Widget _timeOsd(AppState state) => ValueListenableBuilder<Duration>(
+        valueListenable: _videoPosition,
+        builder: (BuildContext context, Duration pos, Widget? _) {
+          final label = _phase == _PlaybackPhase.video
+              ? state.timeFull(_active.startTime.add(pos))
+              : '${state.timeFull(_active.startTime)} 起 · '
+                  '${_active.playbackDurationSeconds}s';
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+            decoration: BoxDecoration(
+                color: Colors.black54, borderRadius: BorderRadius.circular(5)),
+            child: Text(
+              '录像 $label',
+              style: const TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white),
+            ),
+          );
+        },
       );
 
   /// 只有 failed 阶段才渲染错误视图；其余阶段一律是画面或中性加载态。
@@ -361,9 +421,8 @@ class _PlaybackPageState extends State<PlaybackPage> {
         return c != null ? VideoPlayer(c) : _busy('正在准备播放器…');
       case _PlaybackPhase.streamPending:
       case _PlaybackPhase.streamLive:
-        final frame = _mjpegFrame;
-        return frame != null
-            ? Image.memory(frame, fit: BoxFit.contain)
+        return _mjpegFrames.value != null
+            ? _MjpegStage(notifier: _mjpegFrames)
             : _busy('正在接收回放画面…');
       case _PlaybackPhase.failed:
         return _errorView(state);
@@ -418,9 +477,8 @@ class _PlaybackPageState extends State<PlaybackPage> {
 
   String _short(String s) => s.length > 160 ? '${s.substring(0, 160)}…' : s;
 
-  Widget _controls() {
+  Widget _controls(AppState state) {
     final c = _controller;
-    final position = c?.value.position ?? Duration.zero;
     final duration = c?.value.duration ?? Duration.zero;
     final totalSeconds = duration.inSeconds > 0 ? duration.inSeconds : 1;
     return Row(
@@ -435,7 +493,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
           tooltip: '后退 10 秒',
           icon: const AppIcon(AppIcons.skipBack, size: 20),
           onPressed: _videoReady
-              ? () => _seekVideo((_videoFraction - 10 / totalSeconds)
+              ? () => _seekVideo((_videoProgress.value - 10 / totalSeconds)
                   .clamp(0.0, 1.0)
                   .toDouble())
               : null,
@@ -444,14 +502,32 @@ class _PlaybackPageState extends State<PlaybackPage> {
           tooltip: '前进 10 秒',
           icon: const AppIcon(AppIcons.skipFwd, size: 20),
           onPressed: _videoReady
-              ? () => _seekVideo((_videoFraction + 10 / totalSeconds)
+              ? () => _seekVideo((_videoProgress.value + 10 / totalSeconds)
                   .clamp(0.0, 1.0)
                   .toDouble())
               : null,
         ),
         const SizedBox(width: 4),
-        Text('${_mmss(position)} / ${_mmss(duration)}',
-            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+        // 绝对录像时刻 + 相对播放进度，均由 notifier 局部刷新。
+        ValueListenableBuilder<Duration>(
+          valueListenable: _videoPosition,
+          builder: (BuildContext context, Duration pos, Widget? _) => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                _videoReady
+                    ? state.timeLabel(_active.startTime.add(pos))
+                    : state.timeLabel(_active.startTime),
+                style:
+                    const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+              ),
+              Text('${_mmss(pos)} / ${_mmss(duration)}',
+                  style:
+                      const TextStyle(fontSize: 9.5, color: AppColors.faint)),
+            ],
+          ),
+        ),
         const Spacer(),
         DropdownButton<double>(
           value: _speeds.contains(_speed) ? _speed : 1.0,
@@ -473,7 +549,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
     return '$m:$s';
   }
 
-  Widget _timeline() => Column(
+  Widget _timeline(AppState state) => Column(
         children: <Widget>[
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -481,7 +557,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
               Text('00:00',
                   style: TextStyle(fontSize: 10, color: AppColors.faint)),
               Text(
-                  '拖动定位到 ${TimelineMath.timeLabel(TimelineMath.timeAt(_fraction, _dayStart))}',
+                  '拖动定位到 ${state.timeLabel(TimelineMath.timeAt(_fraction, _dayStart))}',
                   style: const TextStyle(
                       fontSize: 11, fontWeight: FontWeight.w600)),
               Text('24:00',
@@ -510,9 +586,10 @@ class _PlaybackPageState extends State<PlaybackPage> {
             child: Stack(
               children: _clips.map((r) {
                 final left = TimelineMath.fractionOf(r.startTime, _dayStart);
-                final width = (r.durationSeconds / TimelineMath.secondsPerDay)
-                    .clamp(0.004, 1.0)
-                    .toDouble();
+                final width =
+                    (r.playbackDurationSeconds / TimelineMath.secondsPerDay)
+                        .clamp(0.004, 1.0)
+                        .toDouble();
                 return Positioned(
                   left: w * left,
                   width: w * width,
@@ -541,12 +618,14 @@ class _PlaybackPageState extends State<PlaybackPage> {
         },
       );
 
-  Widget _clipInfo() => Card(
+  Widget _clipInfo(AppState state) => Card(
         child: Column(
           children: <Widget>[
             _infoRow('事件 ID', _active.id),
-            _infoRow('开始时间', TimelineMath.timeLabel(_active.startTime)),
+            _infoRow('开始时间', state.timeFull(_active.startTime)),
+            _infoRow('结束时间', state.timeFull(_active.playbackEndTime)),
             _infoRow('时长', _active.durationLabel),
+            _infoRow('回放跨度', '${_active.playbackDurationSeconds} 秒'),
             _infoRow('类型', _active.eventType),
             _infoRow('状态', _active.locked ? '已锁定' : '未锁定'),
           ],
@@ -570,7 +649,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
           leading: const AppIcon(AppIcons.play, size: 17),
           title: Text(r.eventType, style: const TextStyle(fontSize: 12.5)),
           subtitle: Text(
-              '${TimelineMath.timeLabel(r.startTime)} · ${r.durationLabel}'
+              '${state.timeShort(r.startTime)} · ${r.durationLabel}'
               '${r.locked ? ' · 已锁定' : ''}',
               style: TextStyle(fontSize: 10, color: AppColors.faint)),
           trailing: Text(r.id == _active.id ? '当前' : '切换',
@@ -652,6 +731,38 @@ class _PlaybackPageState extends State<PlaybackPage> {
             label: const Text('在 Surveillance Station 网页端回放'),
           ),
         ],
+      );
+}
+
+/// MJPEG 回放画面：独立子树逐帧局部重绘，gaplessPlayback 保证换帧不清空
+/// 画面（旧实现没开它，回放流每秒一帧就表现为「一秒闪一次」）。
+class _MjpegStage extends StatelessWidget {
+  const _MjpegStage({required this.notifier});
+
+  final ValueNotifier<Uint8List?> notifier;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (BuildContext context, BoxConstraints constraints) {
+          final dpr = MediaQuery.of(context).devicePixelRatio;
+          var cacheWidth = (constraints.maxWidth * dpr).round();
+          if (cacheWidth <= 0) cacheWidth = 960;
+          if (cacheWidth < 320) cacheWidth = 320;
+          if (cacheWidth > 1920) cacheWidth = 1920;
+          return ValueListenableBuilder<Uint8List?>(
+            valueListenable: notifier,
+            builder: (BuildContext context, Uint8List? frame, Widget? _) {
+              if (frame == null) return const SizedBox.shrink();
+              return Image.memory(
+                frame,
+                fit: BoxFit.contain,
+                gaplessPlayback: true,
+                cacheWidth: cacheWidth,
+                filterQuality: FilterQuality.low,
+              );
+            },
+          );
+        },
       );
 }
 

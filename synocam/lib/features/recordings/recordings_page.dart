@@ -247,7 +247,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
               style:
                   const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
           subtitle: Text(
-              '${TimelineMath.timeLabel(r.startTime)} · ${r.durationLabel}'
+              '${state.timeShort(r.startTime)} · ${r.durationLabel}'
               '${r.locked ? ' · 已锁定' : ''}'
               '${r.codec.isEmpty ? '' : ' · ${r.codec}'}',
               style: TextStyle(fontSize: 10, color: AppColors.faint)),

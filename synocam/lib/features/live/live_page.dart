@@ -10,6 +10,7 @@ import '../../core/theme/app_icons.dart';
 import '../../data/models/camera.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
+import '../../widgets/live_clock.dart';
 import '../../widgets/live_snapshot.dart';
 import 'single_view_page.dart';
 
@@ -126,6 +127,10 @@ class LivePage extends StatelessWidget {
         : state.gridCount == 4
             ? 2
             : 3;
+    // 多画面网格若同时开 N 路 MJPEG 连续流，解码队列会直接堆积导致卡顿。
+    // 单/双画面保留连续流，4 画面及以上降级为低开销快照轮询。
+    final allowStream = state.gridCount <= 2;
+    final maxFps = state.gridCount == 1 ? 20 : (state.gridCount == 2 ? 15 : 10);
     return GridView.builder(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -137,6 +142,9 @@ class LivePage extends StatelessWidget {
       itemCount: cams.length,
       itemBuilder: (context, i) => LiveTile(
         camera: cams[i],
+        allowStream: allowStream,
+        maxFps: maxFps,
+        offsetMinutes: state.timeOffsetMinutes,
         onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
           builder: (_) => SingleViewPage(camera: cams[i]),
         )),
@@ -181,10 +189,16 @@ class LiveTile extends StatelessWidget {
     super.key,
     required this.camera,
     required this.onTap,
+    this.allowStream = true,
+    this.maxFps = 20,
+    this.offsetMinutes = 0,
   });
 
   final Camera camera;
   final VoidCallback onTap;
+  final bool allowStream;
+  final int maxFps;
+  final int offsetMinutes;
 
   @override
   Widget build(BuildContext context) {
@@ -195,7 +209,11 @@ class LiveTile extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: <Widget>[
-            LiveSnapshot(camera: camera),
+            LiveSnapshot(
+              camera: camera,
+              allowStream: allowStream,
+              maxFps: maxFps,
+            ),
             const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -230,9 +248,9 @@ class LiveTile extends StatelessWidget {
                             fontWeight: FontWeight.w600,
                             color: Colors.white)),
                   ),
-                  Text(
-                    '${TimeOfDay.now().hour.toString().padLeft(2, '0')}:'
-                    '${TimeOfDay.now().minute.toString().padLeft(2, '0')}',
+                  LiveClock(
+                    offsetMinutes: offsetMinutes,
+                    showNas: false,
                     style:
                         const TextStyle(fontSize: 8.5, color: Colors.white70),
                   ),

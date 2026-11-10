@@ -32,6 +32,14 @@ class Recording {
   DateTime get endTime => startTime
       .add(Duration(seconds: durationSeconds > 0 ? durationSeconds : 1));
 
+  /// 回放/下载请求使用的时间跨度。SS 常出现「有 startTime 无 stopTime」，
+  /// 旧逻辑此时 endTime 只有 1 秒，回放流与下载各自取 1 秒 / 60 秒，
+  /// 画面内容与标注时间都对不上。此处统一给两条链路同一段真实跨度。
+  int get playbackDurationSeconds => durationSeconds > 0 ? durationSeconds : 60;
+
+  DateTime get playbackEndTime =>
+      startTime.add(Duration(seconds: playbackDurationSeconds));
+
   String get durationLabel {
     if (recording) return '录制中';
     final m = durationSeconds ~/ 60;
@@ -47,11 +55,25 @@ class Recording {
       Map<String, dynamic> j, Map<int, String> cameraNames) {
     final cameraId = _asInt(j['cameraId'] ?? j['camId'] ?? j['cameraid']);
     final start = _asInt(j['startTime'] ?? j['time'] ?? j['timestamp']);
-    final stop = _asInt(j['stopTime'] ?? j['endTime'] ?? j['startTime']);
+    final rawStop = j['stopTime'] ?? j['endTime'] ?? j['stop'] ?? j['end'];
+    final stop = rawStop == null ? 0 : _asInt(rawStop);
     final status = _asInt(j['status'] ?? j['locked']);
     final mode = _asInt(j['mode'] ?? j['eventType']);
     final startDt = DateTime.fromMillisecondsSinceEpoch(_toMs(start));
-    final duration = stop > start ? stop - start : 0;
+    var duration = stop > start ? stop - start : 0;
+    if (duration <= 0) {
+      // 部分 SS 版本不返回 stopTime，改用显式时长字段。
+      duration = _asInt(j['duration'] ??
+          j['length'] ??
+          j['durationSeconds'] ??
+          j['recordingTime']);
+    }
+    if (duration <= 0 && status == 1) {
+      // 仍在录制中的事件没有结束时间：用「此刻 - 开始」得到真实已录时长，
+      // 避免 endTime 退化成 startTime + 1 秒，导致回放流只请求 1 秒画面。
+      final elapsed = DateTime.now().difference(startDt).inSeconds;
+      if (elapsed > 0) duration = elapsed;
+    }
     return Recording(
       id: '${j['id'] ?? j['eventId'] ?? '${cameraId}_$start'}',
       cameraId: cameraId,
@@ -177,6 +199,11 @@ class TimelineMath {
   static String timeLabel(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:'
       '${t.minute.toString().padLeft(2, '0')}:'
       '${t.second.toString().padLeft(2, '0')}';
+
+  /// 完整日期 + 时刻，避免跨天/时区偏差时只看 HH:mm:ss 产生误解。
+  static String dateTimeLabel(DateTime t) =>
+      '${t.year}-${t.month.toString().padLeft(2, '0')}-'
+      '${t.day.toString().padLeft(2, '0')} ${timeLabel(t)}';
 }
 
 class SurveillanceEvent {

@@ -187,7 +187,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
         title: Text(e.title,
             style:
                 const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-        subtitle: Text('${_time(e.time)} · ${e.detail}',
+        subtitle: Text('${state.timeShort(e.time)} · ${e.detail}',
             style: TextStyle(fontSize: 10, color: AppColors.faint)),
         trailing: read
             ? null
@@ -199,9 +199,6 @@ class _NotificationsPageState extends State<NotificationsPage> {
       ),
     );
   }
-
-  String _time(DateTime t) =>
-      '${t.month}/${t.day} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
   _Meta _meta(String type) {
     switch (type) {
