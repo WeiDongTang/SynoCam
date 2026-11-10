@@ -1,11 +1,13 @@
 // 全局应用状态（Provider + ChangeNotifier）。
-// 真实项目可替换为 Riverpod / Bloc；此处保持轻量，聚焦链路可运行。
+// 所有列表数据均来自真实 Synology Web API；加载失败保留错误码供 UI 展示，
+// 绝不回退到任何静态演示数据。
 import 'package:flutter/foundation.dart';
 
 import '../core/config/feature_flags.dart';
+import '../core/network/cert_policy.dart';
 import '../core/network/syno_api.dart';
 import '../core/network/syno_client.dart';
-import '../core/storage/secure_store.dart';
+import '../core/storage/persistent_store.dart';
 import '../data/models/camera.dart';
 import '../data/models/media.dart';
 import '../data/models/syno_session.dart';
@@ -17,43 +19,65 @@ enum LoadState { idle, loading, ready, error }
 
 class AppState extends ChangeNotifier {
   late final SynoClient _client = SynoClient();
-  late final SecureStore _store = InMemorySecureStore();
+  late final PersistentSecureStore _store = PersistentSecureStore();
+  late final AppPreferences _prefs = AppPreferences(_store);
   late final AuthRepository _auth = AuthRepository(_client, _store);
   late final CameraRepository _cameras = CameraRepository(_client);
   late final MediaRepository _media = MediaRepository(_client);
 
   final FeatureFlags flags = FeatureFlags();
 
+  AppPreferences get prefs => _prefs;
+
   bool _bootstrapped = false;
   bool get bootstrapped => _bootstrapped;
 
-  // ── 会话 ──
   SynoSession? _session;
   SynoSession? get session => _session;
   bool get isLoggedIn => _session != null;
+
+  /// NAS 实际支持的 API 能力（SYNO.API.Info 结果），供诊断页展示。
+  Map<String, SynoApiInfoEntry> get apiInfo => _client.apiInfo;
 
   // ── 摄像机 ──
   List<Camera> _camerasList = <Camera>[];
   List<Camera> get cameras => _camerasList;
   LoadState _cameraState = LoadState.idle;
   LoadState get cameraState => _cameraState;
-  String? _error;
-  String? get error => _error;
+  String? _cameraError;
+  String? get cameraError => _cameraError;
 
-  // ── UI 状态（对齐原型）──
-  int _gridCount = 4;
-  int get gridCount => _gridCount;
-  String _cameraQuery = '';
-  String get cameraQuery => _cameraQuery;
-  String _cameraFilter = 'all'; // all / on / off
-  String get cameraFilter => _cameraFilter;
-  bool _cameraGridView = true;
-  bool get cameraGridView => _cameraGridView;
-
+  // ── 录像 / 通知 ──
   List<Recording> _recordings = <Recording>[];
   List<Recording> get recordings => _recordings;
   List<SurveillanceEvent> _events = <SurveillanceEvent>[];
   List<SurveillanceEvent> get events => _events;
+  LoadState _mediaState = LoadState.idle;
+  LoadState get mediaState => _mediaState;
+  String? _mediaError;
+  String? get mediaError => _mediaError;
+  int _eventTotal = 0;
+  int get eventTotal => _eventTotal;
+  Set<String> _readEventIds = <String>{};
+  Set<String> get readEventIds => _readEventIds;
+
+  // ── NAS 能力信息 ──
+  Map<String, dynamic>? _license;
+  Map<String, dynamic>? get license => _license;
+  bool _homeMode = false;
+  bool get homeMode => _homeMode;
+  bool _homeModeSupported = false;
+  bool get homeModeSupported => _homeModeSupported;
+
+  // ── UI 状态（真实交互状态，非演示数据）──
+  int _gridCount = 4;
+  int get gridCount => _gridCount;
+  String _cameraQuery = '';
+  String get cameraQuery => _cameraQuery;
+  String _cameraFilter = 'all';
+  String get cameraFilter => _cameraFilter;
+  bool _cameraGridView = true;
+  bool get cameraGridView => _cameraGridView;
 
   List<Camera> get filteredCameras {
     final q = _cameraQuery.trim().toLowerCase();
@@ -68,15 +92,27 @@ class AppState extends ChangeNotifier {
     }).toList();
   }
 
+  Map<int, String> get cameraNames => <int, String>{
+        for (final c in _camerasList) c.id: c.name
+      };
+
   // ── 生命周期 ──
   Future<void> bootstrap() async {
+    await _store.init();
+    applyCertificatePolicy(_prefs.allowUntrustedCert);
+    _readEventIds = _prefs.readEventIds;
     _session = await _auth.restore();
-    if (_session != null) await refreshCameras();
+    if (_session != null) {
+      // 恢复的会话也要重新发现 API（上次进程的能力缓存已随内存消失）。
+      await _client.discoverApis();
+      await refreshCameras();
+      await refreshMedia();
+      await refreshNasInfo();
+    }
     _bootstrapped = true;
     notifyListeners();
   }
 
-  /// 该 NAS+账号是否已保存「信任此设备」令牌（可免二次验证）。
   Future<String?> deviceId(String host, String account) =>
       _auth.deviceId(host, account);
 
@@ -91,7 +127,6 @@ class AppState extends ChangeNotifier {
     String? deviceName,
     bool remember = true,
   }) async {
-    _error = null;
     _session = await _auth.login(
       host: host,
       account: account,
@@ -104,6 +139,8 @@ class AppState extends ChangeNotifier {
       remember: remember,
     );
     await refreshCameras();
+    await refreshMedia();
+    await refreshNasInfo();
     notifyListeners();
   }
 
@@ -113,39 +150,119 @@ class AppState extends ChangeNotifier {
     _camerasList = <Camera>[];
     _recordings = <Recording>[];
     _events = <SurveillanceEvent>[];
+    _license = null;
+    _cameraState = LoadState.idle;
+    _mediaState = LoadState.idle;
     notifyListeners();
   }
 
-  // ── 数据刷新 ──
+  // ── 真实数据刷新 ──
+  Future<void> refreshAll() async {
+    await refreshCameras();
+    await refreshMedia();
+    await refreshNasInfo();
+  }
+
   Future<void> refreshCameras() async {
     _cameraState = LoadState.loading;
-    _error = null;
+    _cameraError = null;
     notifyListeners();
     try {
       _camerasList = await _cameras.list();
       _cameraState = LoadState.ready;
     } on SynoException catch (e) {
-      _error = e.message;
+      _cameraError = e.diagnostic;
       _cameraState = LoadState.error;
       if (e.needsReLogin) _session = null;
     } catch (e) {
-      _error = '$e';
+      _cameraError = '$e';
       _cameraState = LoadState.error;
     }
     notifyListeners();
   }
 
   Future<void> refreshMedia() async {
+    _mediaState = LoadState.loading;
+    _mediaError = null;
+    notifyListeners();
     try {
-      _recordings = await _media.recordings();
-      _events = await _media.events();
-    } on SynoException catch (_) {
-      // 媒体列表失败不阻断主界面。
+      _recordings = await _media.recordings(cameraNames: cameraNames);
+      _events = _recordings.map(SurveillanceEvent.fromRecording).toList();
+      _eventTotal = _recordings.length;
+      _mediaState = LoadState.ready;
+    } on SynoException catch (e) {
+      _mediaError = e.diagnostic;
+      _mediaState = LoadState.error;
+    } catch (e) {
+      _mediaError = '$e';
+      _mediaState = LoadState.error;
     }
     notifyListeners();
   }
 
-  // ── 摄像机操作 ──
+  Future<void> refreshNasInfo() async {
+    _license = await _cameras.licenseInfo();
+    final hm = await _cameras.homeModeInfo();
+    _homeModeSupported = hm != null;
+    if (hm != null) {
+      _homeMode = hm['on'] == true ||
+          hm['enabled'] == true ||
+          hm['homeMode'] == true ||
+          hm['status'] == 1;
+    }
+    notifyListeners();
+  }
+
+  Future<void> setHomeMode(bool enabled) async {
+    await _cameras.setHomeMode(enabled);
+    _homeMode = enabled;
+    notifyListeners();
+  }
+
+  // ── 录像操作（真实 API）──
+  Future<void> setRecordingLocked(Recording r, bool locked) async {
+    await _media.setLocked(r.id, locked);
+    _recordings = _recordings
+        .map((x) => x.id == r.id
+            ? Recording(
+                id: x.id,
+                cameraId: x.cameraId,
+                cameraName: x.cameraName,
+                startTime: x.startTime,
+                durationSeconds: x.durationSeconds,
+                locked: locked,
+                recording: x.recording,
+                eventType: x.eventType,
+                codec: x.codec,
+              )
+            : x)
+        .toList();
+    _events = _recordings.map(SurveillanceEvent.fromRecording).toList();
+    notifyListeners();
+  }
+
+  Future<void> deleteRecording(Recording r) async {
+    await _media.deleteRecording(r.id);
+    _recordings = _recordings.where((x) => x.id != r.id).toList();
+    _events = _recordings.map(SurveillanceEvent.fromRecording).toList();
+    notifyListeners();
+  }
+
+  String recordingDownloadUrl(Recording r) => _media.downloadUrl(r.id);
+
+  Future<void> markAllEventsRead() async {
+    await _prefs.markEventsRead(_events.map((e) => e.id));
+    _readEventIds = _prefs.readEventIds;
+    notifyListeners();
+  }
+
+  Future<void> markEventRead(String id) async {
+    await _prefs.markEventsRead(<String>[id]);
+    _readEventIds = _prefs.readEventIds;
+    notifyListeners();
+  }
+
+  // ── 摄像机操作（真实 API）──
   Future<void> toggleCamera(Camera c, bool enabled) async {
     await _cameras.setEnabled(c.id, enabled);
     _camerasList = _camerasList
@@ -167,15 +284,57 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  String snapshotUrl(Camera c) => _cameras.snapshotUrl(c.id);
-  String liveStreamUrl(Camera c) => _cameras.liveStreamUrl(c);
+  String snapshotUrl(Camera c, {int? nonce}) =>
+      _cameras.snapshotUrl(c.id, nonce: nonce);
 
-  // ── PTZ 门面（供单画面页调用）──
+  String liveStreamUrl(Camera c) => _cameras.liveStreamUrl(c);
+  String rtspUrl(Camera c) => _cameras.rtspUrl(c);
+  String webUiUrl() => _cameras.webUiUrl();
+  Future<List<int>> takeSnapshot(Camera c) => _cameras.snapshot(c.id);
+
+  // ── PTZ 门面 ──
   Future<void> ptzMove(int cameraId, String direction) =>
       _cameras.ptzMove(cameraId, direction);
-
+  Future<void> ptzZoom(int cameraId, String inOrOut) =>
+      _cameras.ptzZoom(cameraId, inOrOut);
   Future<void> goPreset(int cameraId, int presetId) =>
       _cameras.goPreset(cameraId, presetId);
+  Future<void> runPatrol(int cameraId) => _cameras.runPatrol(cameraId);
+  Future<List<Map<String, dynamic>>> listPresets(int cameraId) =>
+      _cameras.listPresets(cameraId);
+
+  // ── 设置（真实持久化 + 生效）──
+  Future<void> setAllowUntrustedCert(bool v) async {
+    await _prefs.setAllowUntrustedCert(v);
+    applyCertificatePolicy(v);
+    notifyListeners();
+    if (_session != null) await refreshCameras();
+  }
+
+  Future<void> setPollSeconds(int v) async {
+    await _prefs.setPollSeconds(v);
+    notifyListeners();
+  }
+
+  Future<void> setDnd(bool v) async {
+    await _prefs.setDnd(v);
+    notifyListeners();
+  }
+
+  Future<void> setHardwareDecode(bool v) async {
+    await _prefs.setHardwareDecode(v);
+    notifyListeners();
+  }
+
+  Future<void> setPip(bool v) async {
+    await _prefs.setPip(v);
+    notifyListeners();
+  }
+
+  Future<void> setSmartTimeline(bool v) async {
+    await _prefs.setSmartTimeline(v);
+    notifyListeners();
+  }
 
   // ── UI setters ──
   void setGridCount(int n) {

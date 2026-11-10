@@ -11,6 +11,7 @@ import '../lib/core/config/feature_flags.dart';
 import '../lib/core/network/syno_api.dart';
 import '../lib/core/storage/secure_store.dart';
 import '../lib/data/models/camera.dart';
+import '../lib/data/models/media.dart';
 import '../lib/data/models/syno_session.dart';
 
 int _checks = 0;
@@ -193,6 +194,70 @@ Future<void> main() async {
       AppConfig.playbackSpeeds.first == 0.25 &&
           AppConfig.playbackSpeeds.last == 5.0,
       '回放倍速覆盖 0.25x–5x');
+
+  print('── 真实 API 链路（清除演示数据后的能力）──');
+  check(SynoMethod.queryEvents == 'Query',
+      'SS 录像事件用 Query（非 List，method 首字母大写）');
+  check(SynoMethod.queryApiInfo == 'query', 'API Info 用小写 query');
+  check(SynoApi.videoStream ==
+      'SYNO.SurveillanceStation.Stream.VideoStreaming', 'MJPEG 直播流 API 名');
+  check(SynoEndpoints.cgiFromPath('entry.cgi') == '/webapi/entry.cgi',
+      'API Info path 拼接为完整 CGI');
+  check(SynoEndpoints.cgiFromPath(null) == SynoEndpoints.entryCgi,
+      'path 缺失时回退 entry.cgi');
+  final info = parseApiInfo(<String, dynamic>{
+    'SYNO.SurveillanceStation.Camera': <String, dynamic>{
+      'maxVersion': 9,
+      'minVersion': 1,
+      'path': 'entry.cgi',
+    },
+    'SYNO.SurveillanceStation.Event': <String, dynamic>{
+      'maxVersion': 2,
+      'minVersion': 1,
+      'path': 'entry.cgi',
+    },
+  });
+  check(info['SYNO.SurveillanceStation.Camera']!.effectiveVersion() == 9,
+      'Camera 使用 NAS maxVersion 与实现依据上限的较小值');
+  check(info['SYNO.SurveillanceStation.Event']!.effectiveVersion() == 1,
+      'Event 不被 NAS 的更高 maxVersion 带偏（按实现依据取 1）');
+  check(SynoErrorCode.isUnsupported(102) && SynoErrorCode.isUnsupported(103),
+      'API/方法不存在用于真实接口回退判定');
+  check(SynoException.fromCode(102).diagnostic.contains('错误码 102'),
+      '异常携带可定位的 DSM 错误码');
+
+  final camWithKey = Camera.fromSynoJson(<String, dynamic>{
+    'id': 7,
+    'name': '前门',
+    'streamInfo': <String, dynamic>{'stmKey': 'ABC123456789'},
+  });
+  check(camWithKey.stmKey == 'ABC123456789' && camWithKey.canStream,
+      '嵌套 streamInfo 中解析出真实 StmKey');
+  final camWithPath = Camera.fromSynoJson(<String, dynamic>{
+    'id': 8,
+    'name': '车库',
+    'mjpegHttpPath':
+        'http://nas:5000/webapi/entry.cgi?api=SYNO.SurveillanceStation.Stream.VideoStreaming&method=Stream&StmKey="XYZ987654321"',
+  });
+  check(camWithPath.canStream, '从 GetLiveViewPath 完整 URL 提取 StmKey');
+  check(!const Camera(id: 9, name: '无流凭证').canStream,
+      '无凭证时 UI 明确提示而非伪造画面');
+
+  final rec = Recording.fromEventJson(<String, dynamic>{
+    'id': 500,
+    'cameraId': 1,
+    'startTime': 1330640410,
+    'stopTime': 1330640470,
+    'status': 2,
+    'mode': 1,
+    'videoCodec': 'H264',
+  }, <int, String>{1: '前门'});
+  check(rec.durationSeconds == 60 && rec.locked, '真实事件解析时长与锁定状态');
+  check(rec.eventType == '移动侦测' && rec.cameraName == '前门',
+      '录制模式映射为可读类型 + 摄像机名');
+  check(rec.dateLabel.startsWith('2012'), '录像分组日期来自真实时间戳');
+  check(SurveillanceEvent.fromRecording(rec).type == 'motion',
+      '通知事件由真实录像派生');
 
   print('\n✅ 全部 $_checks 项断言通过');
 }

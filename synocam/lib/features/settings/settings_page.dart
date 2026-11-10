@@ -1,171 +1,247 @@
-// 设置：首页模式地图、安全(密码锁/FaceID/AirPlay)、播放与解码、设备管理、登出。
-// 对齐定稿 A 原型 v-set。所有图标走 BadgeIcon 统一系统。
+// 设置：只展示真实生效的开关与 NAS 真实信息。
+// 需要原生能力（生物识别 / AirPlay / 硬件解码播放器）的项目明确标注「当前版本不可用」
+// 并禁用，避免用户误以为已开启；原型的假地图、假额度、假账号均已移除。
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
+import '../../core/utils/launcher.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
 
-class SettingsPage extends StatefulWidget {
+class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
   @override
-  State<SettingsPage> createState() => _SettingsPageState();
-}
-
-class _SettingsPageState extends State<SettingsPage> {
-  bool _passcode = true;
-  bool _biometric = true;
-  bool _airplay = false;
-  bool _hwDecode = true;
-  bool _pip = true;
-  bool _smartTimeline = true;
-
-  @override
   Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final s = state.session;
     return Scaffold(
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 26),
           children: <Widget>[
-            const _Header('设置', '账户 · 安全 · 播放 · 管理'),
-            const _Section('首页模式 · 按位置自动布防'),
-            _map(),
-            const _Section('安全'),
+            const _Header('设置', '连接 · 播放 · 诊断'),
+            const _Section('当前连接（真实会话）'),
             _group(<Widget>[
-              _toggleRow(AppIcons.lock, IconTone.blue, '密码锁', '4 位 · 超时重验',
-                  _passcode, (v) => setState(() => _passcode = v)),
-              _toggleRow(AppIcons.faceId, IconTone.blue, 'Face ID / 指纹',
-                  '生物识别解锁', _biometric, (v) => setState(() => _biometric = v)),
-              _toggleRow(AppIcons.airplay, IconTone.blue, 'AirPlay 镜像',
-                  '整屏 / 仅视频', _airplay, (v) => setState(() => _airplay = v)),
+              _infoRow(AppIcons.server, 'NAS 地址',
+                  s == null ? '未登录' : '${s.host}:${s.port}'),
+              _infoRow(AppIcons.faceId, '账号', s?.account ?? '—'),
+              _infoRow(AppIcons.shield, '传输',
+                  s == null ? '—' : (s.https ? 'HTTPS' : 'HTTP')),
+              _infoRow(
+                  AppIcons.cameras,
+                  '设备数',
+                  state.cameraState == LoadState.ready
+                      ? '${state.cameras.length} 路'
+                      : '未读取'),
+              _infoRow(AppIcons.license, '许可证', _license(state)),
             ]),
-            const _Section('播放与解码'),
+            const _Section('连接与画面（真实生效）'),
             _group(<Widget>[
-              _toggleRow(AppIcons.bolt, IconTone.blue, '硬件解码', 'H.264 / H.265',
-                  _hwDecode, (v) => setState(() => _hwDecode = v)),
-              _toggleRow(AppIcons.pip, IconTone.blue, '悬浮播放器', '离开页面持续播放', _pip,
-                  (v) => setState(() => _pip = v)),
-              _toggleRow(
-                  AppIcons.timeline,
-                  IconTone.blue,
-                  'Smart Timeline',
-                  '按滚动速度缩放',
-                  _smartTimeline,
-                  (v) => setState(() => _smartTimeline = v)),
+              SwitchListTile(
+                secondary: const BadgeIcon(AppIcons.shield),
+                title: const Text('信任自签名 HTTPS 证书',
+                    style: TextStyle(
+                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+                subtitle: Text(
+                    '群晖自签证书默认会导致画面与接口全部失败；开启后放宽证书校验（仅限自有 NAS）',
+                    style: TextStyle(fontSize: 11, color: AppColors.sub)),
+                value: state.prefs.allowUntrustedCert,
+                onChanged: (v) => state.setAllowUntrustedCert(v),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const BadgeIcon(AppIcons.timeline),
+                title: const Text('画面刷新间隔',
+                    style: TextStyle(
+                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+                subtitle: Text('当前 ${state.prefs.pollSeconds} 秒 / 帧',
+                    style: TextStyle(fontSize: 11, color: AppColors.sub)),
+                trailing: DropdownButton<int>(
+                  value: state.prefs.pollSeconds,
+                  items: <int>[1, 2, 3, 5, 10]
+                      .map((v) => DropdownMenuItem<int>(
+                          value: v, child: Text('$v s')))
+                      .toList(),
+                  onChanged: (v) => state.setPollSeconds(v ?? 2),
+                  underline: const SizedBox.shrink(),
+                ),
+              ),
+              const Divider(height: 1),
+              SwitchListTile(
+                secondary: const BadgeIcon(AppIcons.moon,
+                    tone: IconTone.amber),
+                title: const Text('免打扰',
+                    style: TextStyle(
+                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+                subtitle: Text('本机事件提醒静音（真实持久化）',
+                    style: TextStyle(fontSize: 11, color: AppColors.sub)),
+                value: state.prefs.dnd,
+                onChanged: (v) => state.setDnd(v),
+              ),
             ]),
-            const _Section('设备与管理'),
+            const _Section('首页模式（NAS 真实状态）'),
+            _homeMode(state),
+            const _Section('当前版本未提供的能力'),
             _group(<Widget>[
-              _linkRow(
-                  AppIcons.cameras, IconTone.blue, '摄像机管理', '添加 / 编辑 / 启停设备'),
-              _linkRow(
-                  AppIcons.license, IconTone.blue, '许可证', '8 / 10 路已用 · 离线管理'),
-              _linkRow(
-                  AppIcons.moon, IconTone.blue, '推送与免打扰', 'Do Not Disturb'),
-              _linkRow(AppIcons.shield, IconTone.blue, '受信连接', '3 个已信任'),
-              _linkRow(AppIcons.server, IconTone.blue, '账户与服务器',
-                  'admin · NAS-01 · SS 9.2'),
+              _disabledRow(AppIcons.lock, '密码锁 / Face ID',
+                  '需接入本机生物识别与安全存储'),
+              _disabledRow(AppIcons.airplay, 'AirPlay 镜像',
+                  '需原生投屏能力'),
+              _disabledRow(AppIcons.bolt, 'H.265 硬件解码 / 内嵌播放器',
+                  '当前实时画面为快照轮询；内嵌 RTSP 播放器需原生插件'),
+              _disabledRow(AppIcons.pip, '悬浮播放器', '依赖内嵌播放器'),
+              _disabledRow(AppIcons.timeline, 'Smart Timeline 变速回放',
+                  '已提供真实录像片段列表，变速回放需原生播放器'),
+            ]),
+            const _Section('管理与诊断'),
+            _group(<Widget>[
+              _linkRow(AppIcons.refresh, '重新读取 NAS 全部数据',
+                  'Camera/List · Event/Query · License',
+                  () => state.refreshAll()),
+              _linkRow(AppIcons.server, '打开 Surveillance Station 网页端',
+                  '添加设备、录像计划、推送通知等高级配置',
+                  () => openExternalUrl(context, state.webUiUrl(),
+                      label: 'SS 网页端')),
+              _linkRow(AppIcons.info, 'API 能力诊断',
+                  'SYNO.API.Info 返回 ${state.apiInfo.length} 个接口',
+                  () => _showApiInfo(context, state)),
             ]),
             const SizedBox(height: 20),
             OutlinedButton.icon(
-              onPressed: () => context.read<AppState>().logout(),
-              icon:
-                  const AppIcon(AppIcons.power, size: 16, color: AppColors.red),
-              label: const Text('退出登录', style: TextStyle(color: AppColors.red)),
+              onPressed: () => state.logout(),
+              icon: const AppIcon(AppIcons.power, size: 16, color: AppColors.red),
+              label: const Text('退出登录',
+                  style: TextStyle(color: AppColors.red)),
               style: OutlinedButton.styleFrom(
                   minimumSize: const Size.fromHeight(46),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12)),
                   side: const BorderSide(color: AppColors.line)),
             ),
+            const SizedBox(height: 10),
+            Text('提示：若画面/录像为空，请先看对应页面的 DSM 错误码，再到「API 能力诊断」确认 NAS 实际支持的接口。',
+                style: TextStyle(fontSize: 10.5, color: AppColors.faint)),
           ],
         ),
       ),
     );
   }
 
-  Widget _map() => Container(
-        height: 168,
-        margin: const EdgeInsets.only(bottom: 4),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(14),
-          gradient: const LinearGradient(
-              colors: <Color>[Color(0xFFDDE6E0), Color(0xFFCBD8CE)]),
-        ),
-        child: Stack(
-          children: <Widget>[
-            Center(
-              child: Container(
-                width: 160,
-                height: 160,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: AppColors.blue.withOpacity(.08),
-                  border: Border.all(
-                      color: AppColors.blue.withOpacity(.5),
-                      style: BorderStyle.solid),
-                ),
+  String _license(AppState state) {
+    final l = state.license;
+    if (l == null) return '未从 API 读取到';
+    for (final k in <String>['maxCam', 'maxCamera', 'max', 'total']) {
+      if (l[k] != null) return '${l[k]} 路上限';
+    }
+    return '已读取（${l.length} 个字段）';
+  }
+
+  Widget _homeMode(AppState state) => Card(
+        child: state.homeModeSupported
+            ? SwitchListTile(
+                secondary: const BadgeIcon(AppIcons.location),
+                title: const Text('Home Mode',
+                    style: TextStyle(
+                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+                subtitle: Text(
+                    state.homeMode ? '已开启（NAS 真实状态）' : '已关闭（NAS 真实状态）',
+                    style: TextStyle(fontSize: 11, color: AppColors.sub)),
+                value: state.homeMode,
+                onChanged: (v) async {
+                  try {
+                    await state.setHomeMode(v);
+                  } catch (e) {
+                    // 失败时状态保持原值，下次刷新会重新对齐 NAS。
+                    await state.refreshNasInfo();
+                  }
+                },
+              )
+            : ListTile(
+                leading: const BadgeIcon(AppIcons.location),
+                title: const Text('Home Mode',
+                    style: TextStyle(
+                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+                subtitle: Text('该 NAS 未返回 HomeMode/GetInfo 能力，无法在 App 内切换',
+                    style: TextStyle(fontSize: 11, color: AppColors.sub)),
               ),
-            ),
-            Center(
-              child: Container(
-                width: 22,
-                height: 22,
-                decoration: const BoxDecoration(
-                    color: AppColors.blue, shape: BoxShape.circle),
-              ),
-            ),
-            Positioned(
-              left: 13,
-              bottom: 11,
-              child: Text.rich(TextSpan(
-                style: const TextStyle(fontSize: 10, color: Color(0xFF2C3A33)),
-                children: <TextSpan>[
-                  const TextSpan(text: '家 · 半径 '),
-                  TextSpan(
-                      text: '200m',
-                      style: TextStyle(
-                          color: AppColors.blue, fontWeight: FontWeight.w700)),
-                  const TextSpan(text: ' · 延迟 '),
-                  TextSpan(
-                      text: '1min',
-                      style: TextStyle(
-                          color: AppColors.blue, fontWeight: FontWeight.w700)),
-                ],
-              )),
-            ),
-          ],
-        ),
       );
+
+  void _showApiInfo(BuildContext context, AppState state) {
+    final entries = state.apiInfo.entries.toList();
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('NAS API 能力诊断'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: entries.isEmpty
+              ? const Text('未能读取 SYNO.API.Info。请检查网络、端口与 HTTPS 设置。')
+              : ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: entries.length,
+                  itemBuilder: (_, i) {
+                    final e = entries[i];
+                    return ListTile(
+                      dense: true,
+                      title: Text(e.key,
+                          style: const TextStyle(fontSize: 11)),
+                      subtitle: Text('path: ${e.value.cgi}',
+                          style: const TextStyle(fontSize: 9)),
+                      trailing: Text('v${e.value.effectiveVersion()}',
+                          style: const TextStyle(fontSize: 11)),
+                    );
+                  },
+                ),
+        ),
+        actions: <Widget>[
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('关闭')),
+        ],
+      ),
+    );
+  }
 
   Widget _group(List<Widget> children) =>
       Card(child: Column(children: children));
 
-  Widget _toggleRow(IconData icon, IconTone tone, String title, String subtitle,
-          bool value, ValueChanged<bool> onChanged) =>
-      ListTile(
-        leading: BadgeIcon(icon, tone: tone),
-        title: Text(title,
+  Widget _infoRow(IconData icon, String label, String value) => ListTile(
+        leading: BadgeIcon(icon),
+        title: Text(label,
             style:
                 const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-        subtitle: Text(subtitle,
-            style: TextStyle(fontSize: 11, color: AppColors.sub)),
-        trailing: Switch(value: value, onChanged: onChanged),
+        trailing: Text(value,
+            style: TextStyle(fontSize: 11.5, color: AppColors.sub)),
+        dense: true,
       );
 
-  Widget _linkRow(
-          IconData icon, IconTone tone, String title, String subtitle) =>
+  Widget _disabledRow(IconData icon, String title, String reason) => Opacity(
+        opacity: .55,
+        child: ListTile(
+          leading: BadgeIcon(icon, tone: IconTone.neutral),
+          title: Text(title,
+              style: const TextStyle(
+                  fontSize: 13.5, fontWeight: FontWeight.w600)),
+          subtitle: Text('当前版本不可用 · $reason',
+              style: TextStyle(fontSize: 11, color: AppColors.sub)),
+          enabled: false,
+        ),
+      );
+
+  Widget _linkRow(IconData icon, String title, String subtitle,
+          VoidCallback onTap) =>
       ListTile(
-        leading: BadgeIcon(icon, tone: tone),
+        leading: BadgeIcon(icon),
         title: Text(title,
             style:
                 const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
         subtitle: Text(subtitle,
             style: TextStyle(fontSize: 11, color: AppColors.sub)),
         trailing: const AppIcon(AppIcons.chevron, size: 16),
-        onTap: () {},
+        onTap: onTap,
       );
 }
 
@@ -195,8 +271,8 @@ class _Header extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             Text(title,
-                style:
-                    const TextStyle(fontSize: 29, fontWeight: FontWeight.w700)),
+                style: const TextStyle(
+                    fontSize: 29, fontWeight: FontWeight.w700)),
             const SizedBox(height: 3),
             Text(subtitle,
                 style: TextStyle(fontSize: 12, color: AppColors.sub)),

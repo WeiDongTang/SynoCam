@@ -1,14 +1,20 @@
-// 单画面：大画面 + 快捷操作(快照/对讲/变焦/预置位/巡逻/静音) + PTZ 云台
-// + 时间轴回放(变速/关键帧) + 设备信息 + 编辑入口。对齐定稿 A 原型 p-single。
+// 单画面：真实实时预览 + 真实快照 + 真实 PTZ/预置位/巡逻 + 真实录像时间轴。
+// 所有数据来自 NAS；SS Web API 未提供的能力（双向对讲、音频监听、内嵌变速回放）
+// 明确标注不可用并引导到系统播放器 / SS 网页端，不做假交互。
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../core/config/app_config.dart';
+import '../../core/network/syno_api.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
+import '../../core/utils/launcher.dart';
 import '../../data/models/camera.dart';
+import '../../data/models/media.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
+import '../../widgets/live_snapshot.dart';
 import '../cameras/camera_edit_page.dart';
 
 class SingleViewPage extends StatefulWidget {
@@ -21,9 +27,46 @@ class SingleViewPage extends StatefulWidget {
 }
 
 class _SingleViewPageState extends State<SingleViewPage> {
-  double _speed = 1.0;
-  bool _muted = false;
-  bool _playing = true;
+  bool _busy = false;
+  List<Map<String, dynamic>> _presets = <Map<String, dynamic>>[];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadPresets());
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _run(Future<void> Function() op, String label) async {
+    setState(() => _busy = true);
+    try {
+      await op();
+      _snack('$label：NAS 已响应');
+    } on SynoException catch (e) {
+      _snack('$label 失败：${e.diagnostic}');
+    } catch (e) {
+      _snack('$label 失败：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _loadPresets() async {
+    if (!mounted) return;
+    final state = context.read<AppState>();
+    if (!widget.camera.ptzCapable) return;
+    try {
+      final list = await state.listPresets(widget.camera.id);
+      if (mounted) setState(() => _presets = list);
+    } catch (_) {
+      // 该摄像机/版本不支持预置位列表，保留空态即可。
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -31,12 +74,16 @@ class _SingleViewPageState extends State<SingleViewPage> {
     final cam = widget.camera;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('单画面'),
+        title: Text(cam.name),
         leading: IconButton(
           icon: const AppIcon(AppIcons.back, size: 20, color: AppColors.blue),
           onPressed: () => Navigator.of(context).pop(),
         ),
         actions: <Widget>[
+          IconButton(
+            icon: const AppIcon(AppIcons.refresh, size: 20, color: AppColors.blue),
+            onPressed: () => state.refreshAll(),
+          ),
           IconButton(
             icon: const AppIcon(AppIcons.edit, size: 20, color: AppColors.blue),
             onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
@@ -48,13 +95,15 @@ class _SingleViewPageState extends State<SingleViewPage> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 26),
         children: <Widget>[
-          _bigImage(state, cam),
+          _bigImage(cam),
+          const SizedBox(height: 10),
+          _streamActions(context, state, cam),
           const SectionLabel('快捷操作'),
           _actions(context, state, cam),
           const SectionLabel('云台控制 · PTZ'),
           _ptz(context, state, cam),
-          const SectionLabel('时间轴回放'),
-          _timeline(state, cam),
+          const SectionLabel('今日录像（真实片段）'),
+          _timeline(context, state, cam),
           const SectionLabel('设备信息'),
           _deviceInfo(cam),
         ],
@@ -62,23 +111,14 @@ class _SingleViewPageState extends State<SingleViewPage> {
     );
   }
 
-  Widget _bigImage(AppState state, Camera cam) => ClipRRect(
+  Widget _bigImage(Camera cam) => ClipRRect(
         borderRadius: BorderRadius.circular(16),
         child: AspectRatio(
           aspectRatio: 16 / 9,
           child: Stack(
             fit: StackFit.expand,
             children: <Widget>[
-              Image.network(
-                state.snapshotUrl(cam),
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Container(
-                  color: const Color(0xFF22262F),
-                  alignment: Alignment.center,
-                  child: const AppIcon(AppIcons.cameras,
-                      size: 40, color: Colors.white24),
-                ),
-              ),
+              LiveSnapshot(camera: cam),
               const DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
@@ -102,7 +142,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: <Widget>[
                     _osdChip('● LIVE', AppColors.red),
-                    _osdChip('${cam.codec} · ${cam.quality}', null),
+                    _osdChip(
+                        cam.codec.isEmpty ? '实时预览' : cam.codec, null),
                   ],
                 ),
               ),
@@ -140,14 +181,40 @@ class _SingleViewPageState extends State<SingleViewPage> {
                 color: dot ?? Colors.white)),
       );
 
+  Widget _streamActions(BuildContext context, AppState state, Camera cam) => Row(
+        children: <Widget>[
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: cam.canStream
+                  ? () => openExternalUrl(
+                      context, state.liveStreamUrl(cam), label: 'MJPEG 直播流')
+                  : null,
+              icon: const AppIcon(AppIcons.live, size: 16, color: AppColors.blue),
+              label: Text(cam.canStream ? '系统播放器打开直播流' : '未返回直播流凭证'),
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.blue,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(11))),
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: '复制 RTSP 地址',
+            onPressed: () => copyToClipboard(context, state.rtspUrl(cam),
+                label: 'RTSP 地址已复制（可粘贴到支持 RTSP 的播放器）'),
+            icon: const AppIcon(AppIcons.more, size: 20),
+          ),
+        ],
+      );
+
   Widget _actions(BuildContext context, AppState state, Camera cam) {
     final items = <_Action>[
       const _Action(AppIcons.snapshot, '快照'),
-      const _Action(AppIcons.mic, '对讲'),
-      const _Action(AppIcons.zoom, '变焦'),
+      const _Action(AppIcons.zoom, '变焦+'),
       const _Action(AppIcons.target, '预置位'),
       const _Action(AppIcons.patrol, '巡逻'),
-      _Action(_muted ? AppIcons.mute : AppIcons.mic, '静音'),
+      const _Action(AppIcons.mic, '对讲'),
+      const _Action(AppIcons.mute, '音频'),
     ];
     return GridView.count(
       crossAxisCount: 6,
@@ -158,6 +225,9 @@ class _SingleViewPageState extends State<SingleViewPage> {
       children: items
           .map((a) => _ActionButton(
                 action: a,
+                enabled: !_busy &&
+                    a.label != '对讲' &&
+                    a.label != '音频',
                 onTap: () => _onAction(context, state, cam, a.label),
               ))
           .toList(),
@@ -166,37 +236,77 @@ class _SingleViewPageState extends State<SingleViewPage> {
 
   void _onAction(
       BuildContext context, AppState state, Camera cam, String label) {
-    if (label == '静音') setState(() => _muted = !_muted);
-    if (label == '巡逻') {
-      state.ptzMove(cam.id, 'patrol');
+    switch (label) {
+      case '快照':
+        _run(() async {
+          final bytes = await state.takeSnapshot(cam.id);
+          if (!mounted) return;
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('实时快照'),
+              content: Image.memory(Uint8List.fromList(bytes)),
+              actions: <Widget>[
+                TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: const Text('关闭')),
+              ],
+            ),
+          );
+        }, '快照');
+        break;
+      case '变焦+':
+        _run(() => state.ptzZoom(cam.id, 'in'), '变焦');
+        break;
+      case '预置位':
+        _showPresets(context, state, cam);
+        break;
+      case '巡逻':
+        _run(() => state.runPatrol(cam.id), '巡逻');
+        break;
+      // 对讲 / 音频：SS Web API 不提供双向音频与音频流，按钮已禁用。
+      default:
+        break;
     }
-    if (label == '预置位') {
-      state.goPreset(cam.id, 2);
+  }
+
+  Future<void> _showPresets(
+      BuildContext context, AppState state, Camera cam) async {
+    if (_presets.isEmpty) {
+      _snack('该摄像机未返回预置位（PTZ 能力或 API 版本限制）');
+      return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-          content: Text('$label 已触发'), duration: const Duration(seconds: 1)),
+    final chosen = await showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('选择预置位'),
+        children: _presets.map((p) {
+          final id = (p['id'] ?? p['presetId'] ?? 0) as num? ?? 0;
+          final name = '${p['name'] ?? p['presetName'] ?? '预置位 $id'}';
+          return SimpleDialogOption(
+            onPressed: () => Navigator.of(ctx).pop(id.toInt()),
+            child: Text(name),
+          );
+        }).toList(),
+      ),
     );
+    if (chosen != null) {
+      await _run(() => state.goPreset(cam.id, chosen), '转到预置位');
+    }
   }
 
   Widget _ptz(BuildContext context, AppState state, Camera cam) {
-    Future<void> move(String dir) async {
-      try {
-        // CameraRepository.ptzMove 经 state 暴露的门面调用（见 AppState）。
-        await state.ptzMove(cam.id, dir);
-      } catch (_) {}
-    }
-
+    void move(String dir) => _run(() => state.ptzMove(cam.id, dir), '云台 $dir');
     return Row(
       children: <Widget>[
-        _ptzPad(move),
+        _ptzPad(move, cam.ptzCapable),
         const SizedBox(width: 16),
         Expanded(
           child: Column(
             children: <Widget>[
-              _infoChip('预置位', 'P2 · 停车场'),
-              _infoChip('码率', '2.4 Mbps'),
-              _infoChip('状态', cam.isOnline ? '直播中' : '离线'),
+              _infoChip('PTZ 能力', cam.ptzCapable ? '支持' : '不支持'),
+              _infoChip('预置位', '${_presets.length} 个（来自 NAS）'),
+              _infoChip('状态', cam.isOnline ? '在线' : '已停用'),
             ],
           ),
         ),
@@ -204,7 +314,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
     );
   }
 
-  Widget _ptzPad(Future<void> Function(String) move) => Container(
+  Widget _ptzPad(void Function(String) move, bool enabled) => Container(
         width: 146,
         height: 146,
         decoration: BoxDecoration(
@@ -215,27 +325,29 @@ class _SingleViewPageState extends State<SingleViewPage> {
         ),
         child: Stack(
           children: <Widget>[
-            _padBtn(Alignment.topCenter, AppIcons.up, () => move('up')),
-            _padBtn(Alignment.bottomCenter, AppIcons.down, () => move('down')),
-            _padBtn(Alignment.centerLeft, AppIcons.left, () => move('left')),
-            _padBtn(Alignment.centerRight, AppIcons.right, () => move('right')),
+            _padBtn(Alignment.topCenter, AppIcons.up, () => move('up'), enabled),
+            _padBtn(Alignment.bottomCenter, AppIcons.down, () => move('down'), enabled),
+            _padBtn(Alignment.centerLeft, AppIcons.left, () => move('left'), enabled),
+            _padBtn(Alignment.centerRight, AppIcons.right, () => move('right'), enabled),
             Center(
               child: IconButton(
                 icon: const AppIcon(AppIcons.target,
                     size: 22, color: AppColors.blue),
-                onPressed: () => move('home'),
+                onPressed: enabled ? () => move('home') : null,
               ),
             ),
           ],
         ),
       );
 
-  Widget _padBtn(Alignment align, IconData icon, VoidCallback onTap) => Align(
+  Widget _padBtn(Alignment align, IconData icon, VoidCallback onTap,
+          bool enabled) =>
+      Align(
         alignment: align,
         child: Padding(
           padding: const EdgeInsets.all(8),
           child: InkResponse(
-            onTap: onTap,
+            onTap: enabled ? onTap : null,
             radius: 22,
             child: AppIcon(icon, size: 22),
           ),
@@ -254,15 +366,42 @@ class _SingleViewPageState extends State<SingleViewPage> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: <Widget>[
             Text(label, style: TextStyle(fontSize: 12, color: AppColors.sub)),
-            Text(value,
-                style:
-                    const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+            Flexible(
+              child: Text(value,
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w600)),
+            ),
           ],
         ),
       );
 
-  Widget _timeline(AppState state, Camera cam) {
-    cam;
+  /// 今日录像时间轴：真实的 Event/Query 片段，按开始时间在 24h 内定位。
+  Widget _timeline(BuildContext context, AppState state, Camera cam) {
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final clips = state.recordings
+        .where((r) =>
+            r.cameraId == cam.id &&
+            !r.startTime.isBefore(todayStart))
+        .toList();
+
+    if (state.mediaState == LoadState.error) {
+      return _notice(state.mediaError ?? '录像读取失败',
+          onRetry: () => state.refreshMedia());
+    }
+    if (state.mediaState == LoadState.loading) {
+      return const Center(
+          child: Padding(
+        padding: EdgeInsets.all(16),
+        child: CircularProgressIndicator(),
+      ));
+    }
+    if (clips.isEmpty) {
+      return _notice('今日该摄像机暂无录像片段（数据来自 NAS 真实查询）',
+          onRetry: () => state.refreshMedia());
+    }
+
     return Column(
       children: <Widget>[
         Container(
@@ -273,115 +412,91 @@ class _SingleViewPageState extends State<SingleViewPage> {
             border: Border.all(color: AppColors.line),
           ),
           child: Stack(
-            children: <Widget>[
-              _seg(4, 18, AppColors.green.withOpacity(.26), Colors.green),
-              _seg(30, 6, AppColors.red.withOpacity(.28), Colors.red),
-              _seg(42, 24, AppColors.green.withOpacity(.26), Colors.green),
-              _seg(72, 5, AppColors.red.withOpacity(.28), Colors.red),
-              _seg(80, 14, AppColors.green.withOpacity(.26), Colors.green),
-              Positioned(
-                left: MediaQuery.of(context).size.width * .58 - 32,
-                top: -3,
-                bottom: -3,
-                child: Container(width: 2, color: AppColors.blue),
-              ),
-            ],
+            children: clips.map((r) {
+              final minutes = r.startTime.hour * 60 + r.startTime.minute;
+              final left = minutes / 1440;
+              final width =
+                  (r.durationSeconds / 60 / 1440).clamp(0.004, 1.0).toDouble();
+              return Positioned(
+                left: (MediaQuery.of(context).size.width - 32) * left,
+                width: (MediaQuery.of(context).size.width - 32) * width,
+                top: 0,
+                bottom: 0,
+                child: GestureDetector(
+                  onTap: () => openExternalUrl(
+                      context, state.recordingDownloadUrl(r),
+                      label: '录像片段'),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: (r.eventType == '移动侦测' ||
+                                  r.eventType == '告警输入')
+                          ? AppColors.red.withOpacity(.35)
+                          : AppColors.green.withOpacity(.3),
+                      border: Border(
+                        left: BorderSide(
+                            color: r.eventType == '移动侦测'
+                                ? AppColors.red
+                                : AppColors.green),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
           ),
         ),
         const SizedBox(height: 7),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: <Widget>[
-            Text('今日 00:00',
+            Text('00:00',
                 style: TextStyle(fontSize: 10, color: AppColors.faint)),
-            Text('14:32',
+            Text('12:00',
                 style: TextStyle(fontSize: 10, color: AppColors.faint)),
             Text('24:00',
                 style: TextStyle(fontSize: 10, color: AppColors.faint)),
           ],
         ),
-        const SizedBox(height: 9),
-        Row(
-          children: <Widget>[
-            _tlBtn(AppIcons.skipBack, () {}),
-            _tlBtn(_playing ? AppIcons.pause : AppIcons.play,
-                () => setState(() => _playing = !_playing)),
-            _tlBtn(AppIcons.skipFwd, () {}),
-            const SizedBox(width: 7),
-            _speedChip(),
-            const Spacer(),
-            _keyframeChip(),
-          ],
-        ),
+        const SizedBox(height: 10),
+        ...clips.take(8).map((r) => Card(
+              child: ListTile(
+                dense: true,
+                leading: const AppIcon(AppIcons.play, size: 18),
+                title: Text(r.eventType,
+                    style: const TextStyle(fontSize: 12.5)),
+                subtitle: Text(
+                    '${r.startTime.hour.toString().padLeft(2, '0')}:${r.startTime.minute.toString().padLeft(2, '0')} · ${r.durationLabel}${r.locked ? ' · 已锁定' : ''}',
+                    style: TextStyle(fontSize: 10, color: AppColors.faint)),
+                trailing: const AppIcon(AppIcons.chevron, size: 15),
+                onTap: () => openExternalUrl(
+                    context, state.recordingDownloadUrl(r),
+                    label: '录像片段'),
+              ),
+            )),
+        const SizedBox(height: 6),
+        Text('点击片段将用系统播放器打开 NAS 的真实录像流（App 内嵌变速回放需原生播放器，后续版本提供）。',
+            style: TextStyle(fontSize: 10.5, color: AppColors.faint)),
       ],
     );
   }
 
-  Widget _seg(double left, double width, Color bg, Color border) => Positioned(
-        left: (MediaQuery.of(context).size.width - 32) * left / 100,
-        width: (MediaQuery.of(context).size.width - 32) * width / 100,
-        top: 0,
-        bottom: 0,
-        child: Container(
-          decoration: BoxDecoration(
-            color: bg,
-            border: Border(left: BorderSide(color: border.withOpacity(.6))),
-          ),
-        ),
-      );
-
-  Widget _tlBtn(IconData icon, VoidCallback onTap) => Container(
-        width: 38,
-        height: 34,
-        margin: const EdgeInsets.only(right: 7),
+  Widget _notice(String msg, {required VoidCallback onRetry}) => Container(
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: AppColors.card,
-          borderRadius: BorderRadius.circular(9),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(color: AppColors.line),
         ),
-        child: IconButton(
-          padding: EdgeInsets.zero,
-          icon: AppIcon(icon, size: 16),
-          onPressed: onTap,
-        ),
-      );
-
-  Widget _speedChip() => GestureDetector(
-        onTap: () {
-          final speeds = AppConfig.playbackSpeeds;
-          final i = speeds.indexOf(_speed);
-          setState(() => _speed = speeds[(i + 1) % speeds.length]);
-        },
-        child: Container(
-          height: 34,
-          padding: const EdgeInsets.symmetric(horizontal: 11),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: AppColors.blueSoft,
-            borderRadius: BorderRadius.circular(9),
-            border: Border.all(color: AppColors.blue),
-          ),
-          child: Text('$_speed×',
-              style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.blue,
-                  fontWeight: FontWeight.w600)),
-        ),
-      );
-
-  Widget _keyframeChip() => Container(
-        height: 34,
-        padding: const EdgeInsets.symmetric(horizontal: 11),
-        decoration: BoxDecoration(
-          color: AppColors.card,
-          borderRadius: BorderRadius.circular(9),
-          border: Border.all(color: AppColors.line),
-        ),
-        child: Row(
+        child: Column(
           children: <Widget>[
-            const AppIcon(AppIcons.keyframe, size: 14),
-            const SizedBox(width: 5),
-            Text('关键帧', style: TextStyle(fontSize: 10, color: AppColors.sub)),
+            Text(msg,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12, color: AppColors.sub)),
+            const SizedBox(height: 10),
+            TextButton.icon(
+                onPressed: onRetry,
+                icon: const AppIcon(AppIcons.refresh, size: 15),
+                label: const Text('重新读取')),
           ],
         ),
       );
@@ -389,12 +504,12 @@ class _SingleViewPageState extends State<SingleViewPage> {
   Widget _deviceInfo(Camera cam) => Card(
         child: Column(
           children: <Widget>[
-            _infoRow(
-                AppIcons.cameras, cam.model.isEmpty ? '—' : cam.model, '型号'),
+            _infoRow(AppIcons.cameras, cam.model.isEmpty ? '—' : cam.model, '型号'),
             _infoRow(AppIcons.server, cam.ip.isEmpty ? '—' : cam.ip, 'IP 地址'),
-            _infoRow(
-                AppIcons.info, cam.serial.isEmpty ? '—' : cam.serial, '序列号'),
+            _infoRow(AppIcons.info, cam.serial.isEmpty ? '—' : cam.serial, '序列号'),
             _infoRow(AppIcons.power, cam.isOnline ? '已启用' : '已停用', '状态'),
+            _infoRow(AppIcons.shield,
+                cam.canStream ? '已获取流凭证' : '未返回流凭证', '直播流'),
           ],
         ),
       );
@@ -431,27 +546,33 @@ class _Action {
 }
 
 class _ActionButton extends StatelessWidget {
-  const _ActionButton({required this.action, required this.onTap});
+  const _ActionButton(
+      {required this.action, required this.onTap, this.enabled = true});
   final _Action action;
   final VoidCallback onTap;
+  final bool enabled;
+
   @override
-  Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(13),
-        child: Container(
-          decoration: BoxDecoration(
-            color: AppColors.card,
-            borderRadius: BorderRadius.circular(13),
-            border: Border.all(color: AppColors.line),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              AppIcon(action.icon, size: 20),
-              const SizedBox(height: 4),
-              Text(action.label,
-                  style: TextStyle(fontSize: 8, color: AppColors.faint)),
-            ],
+  Widget build(BuildContext context) => Opacity(
+        opacity: enabled ? 1 : .42,
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(13),
+          child: Container(
+            decoration: BoxDecoration(
+              color: AppColors.card,
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: <Widget>[
+                AppIcon(action.icon, size: 20),
+                const SizedBox(height: 4),
+                Text(action.label,
+                    style: TextStyle(fontSize: 8, color: AppColors.faint)),
+              ],
+            ),
           ),
         ),
       );

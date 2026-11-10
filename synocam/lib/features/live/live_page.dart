@@ -1,5 +1,5 @@
 // 实时多画面：1 / 1×2 / 2×2 / 3×3 布局切换 + 点击进入单画面。
-// 对齐定稿 A 原型的布局段控件与画面 OSD（LIVE / 画质 / 名称 / 时间）。
+// 画面来自真实 SS GetSnapshot 轮询，摄像机数量/在线状态来自真实 Camera/List。
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -9,6 +9,7 @@ import '../../core/theme/app_icons.dart';
 import '../../data/models/camera.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
+import '../../widgets/live_snapshot.dart';
 import 'single_view_page.dart';
 
 class LivePage extends StatelessWidget {
@@ -44,14 +45,18 @@ class LivePage extends StatelessWidget {
                         TextStyle(fontSize: 29, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 3),
                 Text(
-                  '${state.cameras.length} 路摄像机 · '
-                  '${state.cameras.where((c) => c.isOnline).length} 在线',
+                  state.cameraState == LoadState.ready
+                      ? '${state.cameras.length} 路摄像机 · '
+                          '${state.cameras.where((c) => c.isOnline).length} 在线'
+                      : state.cameraState == LoadState.loading
+                          ? '正在读取 NAS 摄像机列表…'
+                          : '尚未获取摄像机列表',
                   style: TextStyle(fontSize: 12, color: AppColors.sub),
                 ),
               ],
             ),
             IconButton(
-              onPressed: () => state.refreshCameras(),
+              onPressed: () => state.refreshAll(),
               icon: const AppIcon(AppIcons.refresh, size: 20),
             ),
           ],
@@ -78,7 +83,8 @@ class LivePage extends StatelessWidget {
       );
 
   Widget _grid(BuildContext context, AppState state) {
-    if (state.cameraState == LoadState.loading) {
+    if (state.cameraState == LoadState.loading ||
+        state.cameraState == LoadState.idle) {
       return const Center(child: CircularProgressIndicator());
     }
     if (state.cameraState == LoadState.error) {
@@ -87,17 +93,38 @@ class LivePage extends StatelessWidget {
     final cams = state.cameras.take(state.gridCount).toList();
     if (cams.isEmpty) {
       return Center(
-        child: Text('暂无摄像机，请先在「摄像机」中添加',
-            style: TextStyle(color: AppColors.faint, fontSize: 13)),
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const AppIcon(AppIcons.cameras, size: 34, color: AppColors.faint),
+              const SizedBox(height: 12),
+              Text('NAS 未返回任何摄像机',
+                  style: TextStyle(color: AppColors.sub, fontSize: 13)),
+              const SizedBox(height: 6),
+              Text(
+                '请确认账号具备 Surveillance Station 权限、摄像机已在 SS 中启用且许可证有效。',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: AppColors.faint, fontSize: 11),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => state.refreshCameras(),
+                icon: const AppIcon(AppIcons.refresh,
+                    size: 16, color: Colors.white),
+                label: const Text('重新读取'),
+              ),
+            ],
+          ),
+        ),
       );
     }
-    final cols = state.gridCount == 1
+    final cols = state.gridCount == 1 || state.gridCount == 2
         ? 1
-        : state.gridCount == 2
-            ? 1
-            : state.gridCount == 4
-                ? 2
-                : 3;
+        : state.gridCount == 4
+            ? 2
+            : 3;
     return GridView.builder(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -109,7 +136,6 @@ class LivePage extends StatelessWidget {
       itemCount: cams.length,
       itemBuilder: (context, i) => LiveTile(
         camera: cams[i],
-        thumbnailUrl: state.snapshotUrl(cams[i]),
         onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
           builder: (_) => SingleViewPage(camera: cams[i]),
         )),
@@ -118,21 +144,29 @@ class LivePage extends StatelessWidget {
   }
 
   Widget _errorView(BuildContext context, AppState state) => Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            const AppIcon(AppIcons.alert, size: 32, color: AppColors.red),
-            const SizedBox(height: 10),
-            Text(state.error ?? '加载失败',
-                style: TextStyle(color: AppColors.sub, fontSize: 13)),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: () => state.refreshCameras(),
-              icon: const AppIcon(AppIcons.refresh,
-                  size: 16, color: Colors.white),
-              label: const Text('重试'),
-            ),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const AppIcon(AppIcons.alert, size: 32, color: AppColors.red),
+              const SizedBox(height: 10),
+              Text(state.cameraError ?? '加载失败',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: AppColors.sub, fontSize: 13)),
+              const SizedBox(height: 6),
+              Text('该提示来自 NAS 的真实响应，可据此定位权限 / 版本 / 网络问题。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: AppColors.faint, fontSize: 11)),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => state.refreshCameras(),
+                icon: const AppIcon(AppIcons.refresh,
+                    size: 16, color: Colors.white),
+                label: const Text('重试'),
+              ),
+            ],
+          ),
         ),
       );
 }
@@ -141,12 +175,10 @@ class LiveTile extends StatelessWidget {
   const LiveTile({
     super.key,
     required this.camera,
-    required this.thumbnailUrl,
     required this.onTap,
   });
 
   final Camera camera;
-  final String thumbnailUrl;
   final VoidCallback onTap;
 
   @override
@@ -158,19 +190,7 @@ class LiveTile extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: <Widget>[
-            // 快照轮询等价于预览帧；生产环境替换为 RTSP/原生播放器。
-            Image.network(
-              thumbnailUrl,
-              fit: BoxFit.cover,
-              color: camera.isOnline ? null : Colors.grey,
-              colorBlendMode: camera.isOnline ? null : BlendMode.saturation,
-              errorBuilder: (_, __, ___) => Container(
-                color: const Color(0xFF22262F),
-                alignment: Alignment.center,
-                child: const AppIcon(AppIcons.cameras,
-                    size: 28, color: Colors.white38),
-              ),
-            ),
+            LiveSnapshot(camera: camera),
             const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -187,16 +207,9 @@ class LiveTile extends StatelessWidget {
               ),
             ),
             if (camera.isOnline)
-              Positioned(
-                top: 9,
-                left: 10,
-                child: _liveBadge(),
-              ),
-            Positioned(
-              top: 9,
-              right: 10,
-              child: _chip(camera.quality),
-            ),
+              Positioned(top: 9, left: 10, child: _liveBadge()),
+            if (camera.quality.isNotEmpty)
+              Positioned(top: 9, right: 10, child: _chip(camera.quality)),
             Positioned(
               left: 11,
               right: 11,
@@ -258,5 +271,4 @@ class LiveTile extends StatelessWidget {
       );
 }
 
-// 供测试/预览复用的布局常量。
 List<int> get supportedLayouts => AppConfig.gridLayouts;

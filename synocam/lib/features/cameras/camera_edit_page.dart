@@ -1,16 +1,19 @@
-// 编辑摄像机：名称 / 启停 / 流质量 / 编码 / 录像模式 / 删除 / 保存。
-// 型号、序列号、IP 由 SS 管理只读展示（对齐官方边界，App 内不可改）。
+// 编辑摄像机：只暴露 SS Web API 真实支持的操作（改名 / 启停 / 流质量）。
+// 编码、录像模式、预置位等需 SS 网页端配置，明确标注并禁用，不做假保存。
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
+import '../../core/utils/launcher.dart';
 import '../../data/models/camera.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
+import '../../widgets/live_snapshot.dart';
 
 class CameraEditPage extends StatefulWidget {
   const CameraEditPage({super.key, required this.camera});
+
   final Camera camera;
 
   @override
@@ -21,21 +24,16 @@ class _CameraEditPageState extends State<CameraEditPage> {
   late final TextEditingController _name =
       TextEditingController(text: widget.camera.name);
   late bool _enabled = widget.camera.enabled;
-  late String _quality = widget.camera.quality;
-  String _codec = 'H.265';
-  String _recordMode = '连续录制 + 移动侦测';
+  late String _quality = widget.camera.quality.isEmpty
+      ? '默认'
+      : widget.camera.quality;
   bool _saving = false;
 
   static const List<String> _qualities = <String>[
-    '4MP · 高',
-    '2K · 中',
-    '1080P · 低'
-  ];
-  static const List<String> _codecs = <String>['H.265', 'H.264', 'MJPEG'];
-  static const List<String> _modes = <String>[
-    '连续录制 + 移动侦测',
-    '仅移动侦测',
-    '按计划',
+    '默认',
+    '高',
+    '中',
+    '低',
   ];
 
   @override
@@ -44,56 +42,34 @@ class _CameraEditPageState extends State<CameraEditPage> {
     super.dispose();
   }
 
-  Future<void> _save() async {
-    setState(() => _saving = true);
-    // 在首个 await 前缓存状态对象，避免跨异步间隙再次访问 BuildContext。
-    final state = context.read<AppState>();
-    final q = _quality.split(' ').first; // 4MP / 2K / 1080P
-    await state.saveCamera(
-      widget.camera,
-      name: _name.text.trim(),
-      quality: q,
-    );
-    await state.toggleCamera(widget.camera, _enabled);
+  void _snack(String msg) {
     if (!mounted) return;
-    setState(() => _saving = false);
-    Navigator.of(context).pop();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('摄像机信息已保存')),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  Future<void> _delete() async {
+  Future<void> _save() async {
+    setState(() => _saving = true);
     final state = context.read<AppState>();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除此摄像机'),
-        content: Text('将移除「${widget.camera.name}」，此操作不可撤销。'),
-        actions: <Widget>[
-          TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('删除', style: TextStyle(color: AppColors.red))),
-        ],
-      ),
-    );
-    if (ok == true) {
-      // SS 的删除属网页端高危操作；App 内以停用代替物理删除（对齐官方）。
-      await state.toggleCamera(widget.camera, false);
+    try {
+      final q = _quality == '默认' ? null : _quality;
+      await state.saveCamera(widget.camera,
+          name: _name.text.trim(), quality: q);
+      await state.toggleCamera(widget.camera, _enabled);
       if (!mounted) return;
+      setState(() => _saving = false);
+      _snack('已保存到 NAS');
       Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已停用该摄像机（删除请在 SS 网页端执行）')),
-      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      _snack('保存失败：$e');
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final cam = widget.camera;
+    final state = context.watch<AppState>();
     return Scaffold(
       appBar: AppBar(
         title: const Text('编辑摄像机'),
@@ -117,43 +93,39 @@ class _CameraEditPageState extends State<CameraEditPage> {
             borderRadius: BorderRadius.circular(16),
             child: AspectRatio(
               aspectRatio: 16 / 9,
-              child: Image.network(
-                context.read<AppState>().snapshotUrl(cam),
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Container(
-                    color: const Color(0xFF22262F),
-                    child: const AppIcon(AppIcons.cameras,
-                        size: 40, color: Colors.white24)),
-              ),
+              child: LiveSnapshot(camera: cam),
             ),
           ),
-          const _Section('基本信息'),
+          const _Section('基本信息 · 可保存到 NAS'),
           _group(<Widget>[
             _textField('名称', _name),
             _toggle('启用', _enabled, (v) => setState(() => _enabled = v)),
+            _dropdown('流质量', _quality, _qualities,
+                (v) => setState(() => _quality = v!)),
             _readonly('型号', cam.model.isEmpty ? '—' : cam.model),
             _readonly('序列号', cam.serial.isEmpty ? '—' : cam.serial),
             _readonly('IP 地址', cam.ip.isEmpty ? '—' : cam.ip),
             _readonly('状态', cam.isOnline ? '在线' : '已停用'),
+            _readonly('编码', cam.codec.isEmpty ? '未返回' : cam.codec),
           ]),
-          const _Section('视频与流'),
+          const _Section('仅可在 Surveillance Station 网页端修改'),
           _group(<Widget>[
-            _dropdown('流质量', _quality, _qualities,
-                (v) => setState(() => _quality = v!)),
-            _dropdown(
-                '编码', _codec, _codecs, (v) => setState(() => _codec = v!)),
-            _toggle('数字输出', true, (_) {}),
+            _readonly('录像模式', '按计划在 SS 端配置'),
+            _readonly('预置位 / 巡逻', '在 SS 端设置后 App 可调用'),
+            _readonly('数字输出 / 音频', 'SS Web API 未提供'),
           ]),
-          const _Section('录像'),
-          _group(<Widget>[
-            _dropdown('录像模式', _recordMode, _modes,
-                (v) => setState(() => _recordMode = v!)),
-            _linkRow('预置位 / 巡逻', '4 个'),
-          ]),
+          ListTile(
+            leading: const AppIcon(AppIcons.server, size: 18),
+            title: const Text('打开 SS 网页端配置',
+                style: TextStyle(fontSize: 13, color: AppColors.blue)),
+            trailing: const AppIcon(AppIcons.chevron, size: 15),
+            onTap: () => openExternalUrl(context, state.webUiUrl(),
+                label: 'SS 网页端'),
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
             child: Text(
-              '型号、序列号、IP 等由 Surveillance Station 管理，高级参数请在网页端修改。App 内可调整名称、启停、流质量与录像模式。',
+              'App 内所有可见控件都会真实调用 Synology Web API；无对应接口的参数不做伪实现。',
               style: TextStyle(fontSize: 11, color: AppColors.faint),
             ),
           ),
@@ -169,24 +141,37 @@ class _CameraEditPageState extends State<CameraEditPage> {
           ),
           const SizedBox(height: 10),
           OutlinedButton.icon(
-            onPressed: _delete,
-            icon:
-                const AppIcon(AppIcons.delete, size: 16, color: AppColors.red),
-            label: const Text('删除此摄像机', style: TextStyle(color: AppColors.red)),
+            onPressed: () async {
+              try {
+                await state.toggleCamera(cam, false);
+                if (mounted) {
+                  _snack('已在 NAS 停用该摄像机');
+                  Navigator.of(context).pop();
+                }
+              } catch (e) {
+                _snack('停用失败：$e');
+              }
+            },
+            icon: const AppIcon(AppIcons.power, size: 16, color: AppColors.red),
+            label: const Text('停用此摄像机',
+                style: TextStyle(color: AppColors.red)),
             style: OutlinedButton.styleFrom(
                 minimumSize: const Size.fromHeight(46),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12)),
                 side: const BorderSide(color: AppColors.line)),
           ),
+          const SizedBox(height: 6),
+          Text('物理删除需在 SS 网页端执行（Web API 不提供）。',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 10.5, color: AppColors.faint)),
         ],
       ),
     );
   }
 
-  Widget _group(List<Widget> children) => Card(
-        child: Column(children: children),
-      );
+  Widget _group(List<Widget> children) =>
+      Card(child: Column(children: children));
 
   Widget _textField(String label, TextEditingController controller) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
@@ -227,7 +212,7 @@ class _CameraEditPageState extends State<CameraEditPage> {
         child: Row(
           children: <Widget>[
             SizedBox(
-                width: 82,
+                width: 120,
                 child: Text(label, style: const TextStyle(fontSize: 13))),
             Expanded(
               child: Text(value,
@@ -249,7 +234,7 @@ class _CameraEditPageState extends State<CameraEditPage> {
                 child: Text(label, style: const TextStyle(fontSize: 13))),
             Expanded(
               child: DropdownButton<String>(
-                value: value,
+                value: items.contains(value) ? value : items.first,
                 items: items
                     .map((s) => DropdownMenuItem<String>(
                         value: s,
@@ -261,22 +246,6 @@ class _CameraEditPageState extends State<CameraEditPage> {
                 underline: const SizedBox.shrink(),
               ),
             ),
-          ],
-        ),
-      );
-
-  Widget _linkRow(String label, String value) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-        child: Row(
-          children: <Widget>[
-            SizedBox(
-                width: 120,
-                child: Text(label, style: const TextStyle(fontSize: 13))),
-            const Spacer(),
-            Text(value,
-                style: TextStyle(fontSize: 11.5, color: AppColors.faint)),
-            const SizedBox(width: 4),
-            const AppIcon(AppIcons.chevron, size: 14),
           ],
         ),
       );

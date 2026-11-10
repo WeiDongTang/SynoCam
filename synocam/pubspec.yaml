@@ -22,6 +22,8 @@ dependencies:
   provider: ^6.1.2
   dio: ^5.7.0
   shared_preferences: ^2.3.0
+  # 录像片段用系统播放器打开、跳转 SS 网页端配置（App 内不伪造这些能力）。
+  url_launcher: ^6.3.0
 
 dev_dependencies:
   flutter_test:

@@ -1,5 +1,5 @@
-// 摄像机管理：列表/缩略图切换、搜索、在线筛选、启停、编辑与添加入口。
-// 对齐定稿 A 原型 v-cam。
+// 摄像机管理：真实 Camera/List 数据 + 真实启停 + 真实快照预览。
+// 搜索/筛选为本地真实过滤；添加入口引导到 SS 网页端（Web API 不支持物理添加）。
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -8,6 +8,7 @@ import '../../core/theme/app_icons.dart';
 import '../../data/models/camera.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
+import '../../widgets/live_snapshot.dart';
 import 'camera_add_page.dart';
 import 'camera_edit_page.dart';
 import '../live/single_view_page.dart';
@@ -31,7 +32,7 @@ class CamerasPage extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
               child: Text(
-                '仅 Synology 品牌摄像头可在 App 内添加；第三方 IP 摄像头请先在 Surveillance Station 网页端配置后同步。',
+                '摄像机的物理添加/删除需在 Surveillance Station 网页端完成；App 内可改名、启停、调整流质量并实时预览。',
                 style: TextStyle(fontSize: 10.5, color: AppColors.faint),
               ),
             ),
@@ -46,22 +47,35 @@ class CamerasPage extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: <Widget>[
-            const Column(
+            Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Text('摄像机',
+                const Text('摄像机',
                     style:
                         TextStyle(fontSize: 29, fontWeight: FontWeight.w700)),
-                SizedBox(height: 3),
-                Text('管理 · 添加 · 编辑设备',
+                const SizedBox(height: 3),
+                Text(
+                    state.cameraState == LoadState.ready
+                        ? 'NAS 返回 ${state.cameras.length} 路设备'
+                        : '正在读取 NAS 设备列表',
                     style: TextStyle(fontSize: 12, color: AppColors.sub)),
               ],
             ),
-            _circleBtn(
-              icon: AppIcons.add,
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const CameraAddPage()),
-              ),
+            Row(
+              children: <Widget>[
+                _circleBtn(
+                  icon: AppIcons.refresh,
+                  onTap: () => state.refreshAll(),
+                ),
+                const SizedBox(width: 8),
+                _circleBtn(
+                  icon: AppIcons.add,
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                        builder: (_) => const CameraAddPage()),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -75,7 +89,7 @@ class CamerasPage extends StatelessWidget {
               child: TextField(
                 onChanged: state.setCameraQuery,
                 decoration: const InputDecoration(
-                  hintText: '搜索名称 / IP / 状态',
+                  hintText: '搜索名称 / IP / 型号',
                   prefixIcon: AppIcon(AppIcons.search, size: 18),
                   prefixIconConstraints:
                       BoxConstraints(minWidth: 40, minHeight: 40),
@@ -125,10 +139,38 @@ class CamerasPage extends StatelessWidget {
   }
 
   Widget _body(BuildContext context, AppState state) {
+    if (state.cameraState == LoadState.loading ||
+        state.cameraState == LoadState.idle) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (state.cameraState == LoadState.error) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const AppIcon(AppIcons.alert, size: 30, color: AppColors.red),
+              const SizedBox(height: 10),
+              Text(state.cameraError ?? '读取失败',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: AppColors.sub, fontSize: 12.5)),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                  onPressed: () => state.refreshCameras(),
+                  icon: const AppIcon(AppIcons.refresh,
+                      size: 16, color: Colors.white),
+                  label: const Text('重试')),
+            ],
+          ),
+        ),
+      );
+    }
     final list = state.filteredCameras;
     if (list.isEmpty) {
       return Center(
-        child: Text('没有匹配的摄像机',
+        child: Text(
+            state.cameras.isEmpty ? 'NAS 未返回任何摄像机' : '没有匹配的摄像机',
             style: TextStyle(color: AppColors.faint, fontSize: 13)),
       );
     }
@@ -161,19 +203,7 @@ class CamerasPage extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              Expanded(
-                child: Image.network(
-                  state.snapshotUrl(c),
-                  fit: BoxFit.cover,
-                  color: c.isOnline ? null : Colors.grey,
-                  colorBlendMode: c.isOnline ? null : BlendMode.saturation,
-                  errorBuilder: (_, __, ___) => Container(
-                    color: const Color(0xFF22262F),
-                    child: const AppIcon(AppIcons.cameras,
-                        size: 28, color: Colors.white24),
-                  ),
-                ),
-              ),
+              Expanded(child: LiveSnapshot(camera: c)),
               Padding(
                 padding: const EdgeInsets.fromLTRB(11, 9, 11, 11),
                 child: Column(
@@ -185,8 +215,10 @@ class CamerasPage extends StatelessWidget {
                         style: const TextStyle(
                             fontSize: 12, fontWeight: FontWeight.w600)),
                     const SizedBox(height: 3),
-                    Text('${c.quality} · ${c.isOnline ? '在线' : '停用'}',
-                        style: TextStyle(fontSize: 9, color: AppColors.faint)),
+                    Text(
+                        '${c.quality.isEmpty ? (c.model.isEmpty ? '摄像机' : c.model) : c.quality} · ${c.isOnline ? '在线' : '停用'}',
+                        style:
+                            TextStyle(fontSize: 9, color: AppColors.faint)),
                   ],
                 ),
               ),
@@ -210,10 +242,7 @@ class CamerasPage extends StatelessWidget {
                 child: SizedBox(
                   width: 70,
                   height: 48,
-                  child: Image.network(state.snapshotUrl(c),
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) =>
-                          Container(color: const Color(0xFF22262F))),
+                  child: LiveSnapshot(camera: c),
                 ),
               ),
               title: Text(c.name,
@@ -230,7 +259,23 @@ class CamerasPage extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
                   _statusBadge(c.isOnline),
-                  const SizedBox(width: 6),
+                  Switch(
+                    value: c.enabled,
+                    onChanged: (v) async {
+                      try {
+                        await state.toggleCamera(c, v);
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                              content: Text(v ? '已在 NAS 启用' : '已在 NAS 停用')));
+                        }
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('启停失败：$e')));
+                        }
+                      }
+                    },
+                  ),
                   IconButton(
                     icon: const AppIcon(AppIcons.edit,
                         size: 16, color: AppColors.blue),

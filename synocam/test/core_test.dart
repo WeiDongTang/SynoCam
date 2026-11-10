@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:synocam/core/config/feature_flags.dart';
 import 'package:synocam/core/network/syno_api.dart';
 import 'package:synocam/data/models/camera.dart';
+import 'package:synocam/data/models/media.dart';
 
 void main() {
   group('buildSynoUrl', () {
@@ -180,6 +181,79 @@ void main() {
       final f = FeatureFlags(
           remote: (k) => k == 'notification_push_v2_enabled' ? true : null);
       expect(f.isEnabled('notification_push_v2_enabled'), isTrue);
+    });
+  });
+
+  group('真实 API 链路（无演示数据）', () {
+    test('SS 录像事件 method 为 Query，直播流 API 名正确', () {
+      expect(SynoMethod.queryEvents, 'Query');
+      expect(SynoMethod.queryApiInfo, 'query');
+      expect(SynoApi.videoStream,
+          'SYNO.SurveillanceStation.Stream.VideoStreaming');
+    });
+
+    test('SYNO.API.Info 动态版本发现', () {
+      final info = parseApiInfo(<String, dynamic>{
+        'SYNO.SurveillanceStation.Camera': <String, dynamic>{
+          'maxVersion': 9,
+          'minVersion': 1,
+          'path': 'entry.cgi',
+        },
+        'SYNO.SurveillanceStation.Event': <String, dynamic>{
+          'maxVersion': 2,
+          'minVersion': 1,
+          'path': 'entry.cgi',
+        },
+      });
+      expect(info['SYNO.SurveillanceStation.Camera']!.effectiveVersion(), 9);
+      expect(info['SYNO.SurveillanceStation.Event']!.effectiveVersion(), 1);
+      expect(info['SYNO.SurveillanceStation.Camera']!.cgi,
+          '/webapi/entry.cgi');
+      expect(SynoEndpoints.cgiFromPath(null), SynoEndpoints.entryCgi);
+    });
+
+    test('StmKey 从嵌套结构与直播路径中真实解析', () {
+      final a = Camera.fromSynoJson(<String, dynamic>{
+        'id': 1,
+        'name': '前门',
+        'streamInfo': <String, dynamic>{'stmKey': 'ABC123456789'},
+      });
+      expect(a.canStream, isTrue);
+      expect(a.stmKey, 'ABC123456789');
+
+      final b = Camera.fromSynoJson(<String, dynamic>{
+        'id': 2,
+        'name': '车库',
+        'mjpegHttpPath':
+            'http://nas:5000/webapi/entry.cgi?api=SYNO.SurveillanceStation.Stream.VideoStreaming&method=Stream&StmKey="XYZ987654321"',
+      });
+      expect(b.canStream, isTrue);
+      expect(const Camera(id: 3, name: '无凭证').canStream, isFalse);
+    });
+
+    test('Event/Query 真实字段映射为录像与通知', () {
+      final r = Recording.fromEventJson(<String, dynamic>{
+        'id': 500,
+        'cameraId': 1,
+        'startTime': 1330640410,
+        'stopTime': 1330640470,
+        'status': 2,
+        'mode': 1,
+        'videoCodec': 'H264',
+      }, <int, String>{1: '前门'});
+      expect(r.durationSeconds, 60);
+      expect(r.locked, isTrue);
+      expect(r.eventType, '移动侦测');
+      expect(r.cameraName, '前门');
+      expect(SurveillanceEvent.fromRecording(r).type, 'motion');
+    });
+
+    test('不支持的接口错误码用于真实回退，异常携带错误码', () {
+      expect(SynoErrorCode.isUnsupported(102), isTrue);
+      expect(SynoErrorCode.isUnsupported(103), isTrue);
+      expect(SynoErrorCode.isUnsupported(400), isFalse);
+      expect(SynoException.fromCode(102).diagnostic.contains('错误码 102'),
+          isTrue);
     });
   });
 }

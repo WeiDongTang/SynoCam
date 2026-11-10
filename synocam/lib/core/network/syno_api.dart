@@ -1,8 +1,13 @@
 // Synology DSM / Surveillance Station Web API 常量、URL 构造与通用响应解析。
 //
-// 参考：DSM「SYNO.API.*」通用约定 + Surveillance Station 9.x Web API。
+// 参考：
+//  - Synology《Surveillance Station Web API》(SS 6.x–9.x)
+//  - Synology《DSM Login Web API Guide》
+//  - 实证：Camera/List 需带 streamInfo=true&camStm=1 才返回 StmKey；
+//    MJPEG 直播流为 SYNO.SurveillanceStation.Stream.VideoStreaming/Stream；
+//    录像事件为 SYNO.SurveillanceStation.Event/Query（method 首字母大写）。
+//
 // 本文件为纯 Dart（不依赖 Flutter / dio），可在无 SDK 的 CI 里被单元测试。
-// 真实登录 → 取 SID → 带 _sid 调 entry.cgi 的完整链路见 syno_client.dart。
 
 import 'dart:convert';
 
@@ -15,6 +20,14 @@ class SynoEndpoints {
   static const String queryCgi = '/webapi/query.cgi';
   static const int httpPort = 5000;
   static const int httpsPort = 5001;
+
+  /// 把 API Info 返回的 path（如 "entry.cgi"）拼成完整 CGI 路径。
+  static String cgiFromPath(String? path) {
+    if (path == null || path.trim().isEmpty) return entryCgi;
+    final p = path.trim();
+    if (p.startsWith('/')) return p;
+    return '/webapi/$p';
+  }
 }
 
 /// API 名称常量（SYNO.*）。
@@ -25,43 +38,67 @@ class SynoApi {
   static const String auth = 'SYNO.API.Auth';
   static const String camera = 'SYNO.SurveillanceStation.Camera';
   static const String ptz = 'SYNO.SurveillanceStation.PTZ';
+  // 实证：直播流 API 名含 ".Stream." 段（GetLiveViewPath 返回值即此形式）。
   static const String videoStream =
       'SYNO.SurveillanceStation.Stream.VideoStreaming';
+  // 部分 SS 版本用无 ".Stream." 段的别名，作为回退探测。
+  static const String videoStreamAlt =
+      'SYNO.SurveillanceStation.VideoStreaming';
   static const String recording = 'SYNO.SurveillanceStation.Recording';
   static const String snapshot = 'SYNO.SurveillanceStation.Snapshot';
   static const String event = 'SYNO.SurveillanceStation.Event';
-  static const String externalEvent = 'SYNO.SurveillanceStation.ExternalEvent';
+  static const String log = 'SYNO.SurveillanceStation.Log';
+  static const String externalEvent =
+      'SYNO.SurveillanceStation.ExternalEvent';
   static const String actionRule = 'SYNO.SurveillanceStation.ActionRule';
   static const String license = 'SYNO.SurveillanceStation.License';
   static const String homeMode = 'SYNO.SurveillanceStation.HomeMode';
 
-  /// 各 API 的兜底版本；实际应以 SYNO.API.Info 返回的 maxVersion 为准。
+  /// 各 API 的兜底版本；登录后应以 SYNO.API.Info 返回的 maxVersion 为准。
   static const Map<String, int> defaultVersions = <String, int>{
     info: 1,
     auth: 6,
     camera: 9,
     ptz: 4,
     videoStream: 1,
-    recording: 6,
+    videoStreamAlt: 1,
+    recording: 4,
     snapshot: 2,
-    event: 6,
+    event: 1,
+    log: 1,
     externalEvent: 1,
     actionRule: 1,
+    license: 1,
+    homeMode: 1,
+  };
+
+  /// 我们实现时所依据的最高版本（避免盲目使用过新的 maxVersion 导致参数不兼容）。
+  static const Map<String, int> preferredVersions = <String, int>{
+    camera: 9,
+    ptz: 4,
+    videoStream: 1,
+    videoStreamAlt: 1,
+    recording: 4,
+    event: 1,
+    log: 1,
     license: 1,
     homeMode: 1,
   };
 }
 
 /// 常用 method 常量，避免各处硬编码拼写不一致。
+/// 注意大小写：SYNO.API.Info 用小写 query；SS Event 用大写 Query。
 class SynoMethod {
   SynoMethod._();
 
-  static const String query = 'query';
+  static const String queryApiInfo = 'query';
+  static const String queryEvents = 'Query';
   static const String login = 'login';
   static const String logout = 'logout';
   static const String list = 'List';
   static const String getInfo = 'GetInfo';
   static const String getSnapshot = 'GetSnapshot';
+  static const String getLiveViewPath = 'GetLiveViewPath';
   static const String enable = 'Enable';
   static const String disable = 'Disable';
   static const String save = 'Save';
@@ -75,11 +112,13 @@ class SynoMethod {
   static const String unlock = 'Unlock';
   static const String download = 'Download';
   static const String delete = 'Delete';
+  static const String switchMode = 'Switch';
+  static const String record = 'Record';
 }
 
 /// 构造 DSM Web API 的完整 URL。
 ///
-/// [base] 形如 `192.168.1.10` 或 `nas.example.com`（不含 scheme / 端口时可省略 port）。
+/// [host] 形如 `192.168.1.10` / `nas.example.com`（可带 scheme 与端口）。
 /// [cgi] 为 SynoEndpoints 中的路径；[query] 中的 null 值会被自动剔除。
 String buildSynoUrl({
   required String host,
@@ -90,7 +129,6 @@ String buildSynoUrl({
 }) {
   var h = host.trim();
   var p = port;
-  // 若 host 里已带 scheme / 端口，拆分出来，保证 Uri 构造正确。
   if (h.startsWith('https://')) {
     https = true;
     h = h.substring(8);
@@ -163,19 +201,58 @@ class SynoApiError {
   final int code;
 }
 
+/// SYNO.API.Info / query 返回的单条 API 描述。
+class SynoApiInfoEntry {
+  const SynoApiInfoEntry({
+    required this.name,
+    required this.maxVersion,
+    required this.minVersion,
+    required this.path,
+  });
+
+  final String name;
+  final int maxVersion;
+  final int minVersion;
+  final String path;
+
+  factory SynoApiInfoEntry.from(String name, Map<String, dynamic> j) =>
+      SynoApiInfoEntry(
+        name: name,
+        maxVersion: (j['maxVersion'] as num?)?.toInt() ?? 1,
+        minVersion: (j['minVersion'] as num?)?.toInt() ?? 1,
+        path: j['path'] as String? ?? 'entry.cgi',
+      );
+
+  /// 该 API 实际应使用的版本：取 NAS 支持上限与我们实现依据上限的较小值。
+  int effectiveVersion() {
+    final preferred = SynoApi.preferredVersions[name];
+    final ceiling = preferred ?? maxVersion;
+    final v = maxVersion < ceiling ? maxVersion : ceiling;
+    return v < minVersion ? minVersion : v;
+  }
+
+  String get cgi => SynoEndpoints.cgiFromPath(path);
+}
+
+/// 解析 SYNO.API.Info 的 data 段。
+Map<String, SynoApiInfoEntry> parseApiInfo(Map<String, dynamic> data) {
+  final out = <String, SynoApiInfoEntry>{};
+  data.forEach((k, v) {
+    if (v is Map) {
+      out[k] = SynoApiInfoEntry.from(k, Map<String, dynamic>.from(v));
+    }
+  });
+  return out;
+}
+
 /// DSM / SS 错误码。
 ///
-/// 400–410 来自 Synology 官方《DSM Login Web API Guide》中
-/// SYNO.API.Auth 的 "API Error Codes" 表；100–119 为 DSM 通用错误码。
-///
-/// 重要：账号开启两步验证（2FA）后，login 只带 passwd 不带 otp_code 时
-/// 返回的是 **403（需要验证码）**，验证码错误返回 **404**。早期实现曾把
-/// 403 误标成「密码错误」、把 404/405 当作「需要两步验证」，导致 2FA 用户
-/// 看到误导性报错且 OTP 输入框永远不弹出 —— 本表已按官方定义校正。
+/// 400–410 来自《DSM Login Web API Guide》SYNO.API.Auth "API Error Codes"；
+/// 100–119 为 DSM 通用错误码。2FA 账号不带 otp_code 时返回 403（需验证码），
+/// 验证码错误 404，强制 2FA 406，账号或密码错误 400。
 class SynoErrorCode {
   SynoErrorCode._();
 
-  // ── DSM 通用错误码 ──
   static const int unknown = 100;
   static const int invalidParameter = 101;
   static const int apiNotExist = 102;
@@ -186,29 +263,33 @@ class SynoErrorCode {
   static const int duplicateLogin = 107;
   static const int invalidSession = 119;
 
-  // ── SYNO.API.Auth / login 官方错误码 ──
-  static const int badCredentials = 400; // 账号不存在或密码错误
-  static const int accountDisabled = 401; // 账号已停用
-  static const int permissionDenied = 402; // 权限不足
-  static const int otpRequired = 403; // 需要两步验证码
-  static const int otpInvalid = 404; // 两步验证码认证失败
-  static const int otpEnforced = 406; // 强制要求启用 / 完成两步验证
-  static const int ipBlocked = 407; // IP 已被封锁
-  static const int passwordExpiredNoChange = 408; // 密码过期且不可自行修改
-  static const int passwordExpired = 409; // 密码已过期
-  static const int passwordMustChange = 410; // 必须修改密码
+  static const int badCredentials = 400;
+  static const int accountDisabled = 401;
+  static const int permissionDenied = 402;
+  static const int otpRequired = 403;
+  static const int otpInvalid = 404;
+  static const int otpEnforced = 406;
+  static const int ipBlocked = 407;
+  static const int passwordExpiredNoChange = 408;
+  static const int passwordExpired = 409;
+  static const int passwordMustChange = 410;
 
-  // 兼容旧调用的别名（语义已按官方定义校正，勿再按字面理解）。
   static const int invalidAccount = badCredentials;
   static const int wrongPassword = badCredentials;
   static const int needTwoFactor = otpRequired;
+
+  /// API 或方法不存在：用于「该 NAS 版本不支持此接口」的回退判定。
+  static bool isUnsupported(int code) =>
+      code == apiNotExist ||
+      code == methodNotExist ||
+      code == versionNotSupported;
 
   static String describe(int code) {
     const m = <int, String>{
       100: '未知错误',
       101: '参数无效',
-      102: 'API 不存在（请确认已安装 Surveillance Station）',
-      103: '方法不存在',
+      102: 'API 不存在（请确认已安装并启用 Surveillance Station）',
+      103: '该 API 不支持此方法',
       104: '该 API 版本不受支持',
       105: '当前账号无权限执行此操作',
       106: '会话已超时，请重新登录',
@@ -239,22 +320,22 @@ class SynoException implements Exception {
 
   factory SynoException.fromCode(int code) => SynoException(code);
 
-  /// 会话类错误 → UI 应触发重新登录。
   bool get needsReLogin =>
       code == SynoErrorCode.sessionTimeout ||
       code == SynoErrorCode.duplicateLogin ||
       code == SynoErrorCode.permissionDenied ||
       code == SynoErrorCode.invalidSession;
 
-  /// 两步验证相关错误 → UI 应展开 / 保持 OTP 输入框并允许重新提交。
-  /// 403 = 需要输入验证码；404 = 验证码错误需重试；406 = 强制要求 2FA。
   bool get needsOtp =>
       code == SynoErrorCode.otpRequired ||
       code == SynoErrorCode.otpInvalid ||
       code == SynoErrorCode.otpEnforced;
 
-  /// 验证码被拒绝（区别于「首次需要输入验证码」），用于聚焦与文案。
   bool get otpRejected => code == SynoErrorCode.otpInvalid;
+
+  /// 供 UI 展示「错误码」，便于用户反馈时精确定位（本环境无法直连 NAS）。
+  String get diagnostic =>
+      message.contains('错误码') ? message : '$message（错误码 $code）';
 
   @override
   String toString() => 'SynoException($code): $message';

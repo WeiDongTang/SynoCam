@@ -1,7 +1,5 @@
-// 录像 / 快照 / 事件仓储。SS 的 List 返回字段因版本差异较大，这里做宽松解析；
-// 未能映射的字段用安全默认值，保证 UI 不会因个别缺失字段崩溃。
-import '../../core/config/app_config.dart';
-import '../../core/network/syno_api.dart';
+// 录像 / 事件仓储：全部数据来自 SYNO.SurveillanceStation.Event / Query。
+// 不再有任何静态演示数据：接口失败抛异常，空结果返回空列表，由 UI 显示真实空态。
 import '../../core/network/syno_client.dart';
 import '../models/media.dart';
 
@@ -10,73 +8,72 @@ class MediaRepository {
 
   final SynoClient _client;
 
-  Future<List<Recording>> recordings({int cameraId = -1}) async {
-    final data = await _client.call(
-      api: SynoApi.recording,
-      method: SynoMethod.list,
-      params: <String, String?>{
-        'cameraIds': cameraId < 0 ? '' : '$cameraId',
-        'limit': '${AppConfig.recordingPageSize}',
-      },
+  /// 查询真实录像片段。
+  Future<List<Recording>> recordings({
+    required Map<int, String> cameraNames,
+    int limit = 100,
+    int offset = 0,
+    DateTime? from,
+    DateTime? to,
+    int? cameraId,
+    int? locked,
+    int? mode,
+  }) async {
+    final data = await _client.queryEvents(
+      limit: limit,
+      offset: offset,
+      fromTime: from == null ? null : from.millisecondsSinceEpoch ~/ 1000,
+      toTime: to == null ? null : to.millisecondsSinceEpoch ~/ 1000,
+      cameraIds: cameraId == null ? null : '$cameraId',
+      locked: locked,
+      mode: mode == null ? null : '$mode',
     );
-    final raw = data['recordings'] ?? data['recordingsList'] ?? data['list'];
-    if (raw is! List) return <Recording>[];
-    return raw.whereType<Map<String, dynamic>>().map(_recording).toList();
+    final raw = _eventsOf(data);
+    return raw
+        .whereType<Map>()
+        .map((e) =>
+            Recording.fromEventJson(Map<String, dynamic>.from(e), cameraNames))
+        .toList()
+      ..sort((a, b) => b.startTime.compareTo(a.startTime));
   }
 
-  Recording _recording(Map<String, dynamic> j) {
-    final startMs = (j['startTime'] as num?)?.toInt() ?? 0;
-    return Recording(
-      id: '${j['id'] ?? j['recordingId'] ?? startMs}',
-      cameraId: (j['cameraId'] as num?)?.toInt() ?? 0,
-      cameraName: '${j['cameraName'] ?? '摄像机'}',
-      startTime: DateTime.fromMillisecondsSinceEpoch(
-          startMs > 1e12 ? startMs : startMs * 1000),
-      durationSeconds: (j['duration'] as num?)?.toInt() ??
-          (j['durationSeconds'] as num?)?.toInt() ??
-          0,
-      locked: j['locked'] == true || j['isLocked'] == true,
-      eventType: '${j['eventType'] ?? j['reason'] ?? '连续录制'}',
-    );
+  /// 通知页数据源：同样取真实录像/告警事件（SS 无独立的移动端通知推送 API，
+  /// 推送需在 DSM 通知服务里配置；App 内展示 NAS 上真实发生的事件）。
+  Future<List<SurveillanceEvent>> events({
+    required Map<int, String> cameraNames,
+    int limit = 50,
+  }) async {
+    final recs = await recordings(cameraNames: cameraNames, limit: limit);
+    return recs.map(SurveillanceEvent.fromRecording).toList();
   }
 
-  Future<List<SurveillanceEvent>> events() async {
-    final data = await _client.call(
-      api: SynoApi.event,
-      method: SynoMethod.list,
-      params: <String, String?>{'limit': '${AppConfig.eventPageSize}'},
-    );
-    final raw = data['events'] ?? data['list'];
-    if (raw is! List) return <SurveillanceEvent>[];
-    return raw.whereType<Map<String, dynamic>>().map(_event).toList();
+  /// SS 事件日志（若该版本支持），作为通知的补充真实来源。
+  Future<List<Map<String, dynamic>>> logEntries({int limit = 50}) async {
+    final data = await _client.queryLog(limit: limit);
+    if (data == null) return <Map<String, dynamic>>[];
+    final raw = data['logs'] ?? data['events'] ?? data['list'];
+    if (raw is! List) return <Map<String, dynamic>>[];
+    return raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
   }
 
-  SurveillanceEvent _event(Map<String, dynamic> j) {
-    final ts =
-        (j['timestamp'] as num?)?.toInt() ?? (j['time'] as num?)?.toInt() ?? 0;
-    return SurveillanceEvent(
-      id: '${j['id'] ?? j['eventId'] ?? ts}',
-      title: '${j['desc'] ?? j['description'] ?? j['title'] ?? '事件'}',
-      time: DateTime.fromMillisecondsSinceEpoch(ts > 1e12 ? ts : ts * 1000),
-      type: '${j['type'] ?? j['eventType'] ?? 'system'}',
-      read: j['read'] == true || j['isRead'] == true,
-      cameraId: (j['cameraId'] as num?)?.toInt(),
-    );
+  List<dynamic> _eventsOf(Map<String, dynamic> data) {
+    final raw = data['events'] ??
+        data['recordings'] ??
+        data['recordingsList'] ??
+        data['list'];
+    return raw is List ? raw : <dynamic>[];
   }
 
-  Future<void> setLocked(String recordingId, bool locked) async {
-    await _client.call(
-      api: SynoApi.recording,
-      method: locked ? SynoMethod.lock : SynoMethod.unlock,
-      params: <String, String?>{'id': recordingId},
-    );
+  /// 事件总数（用于分页/「共 N 条」展示，来自真实响应）。
+  int totalOf(Map<String, dynamic> data) {
+    final v = data['total'];
+    return v is num ? v.toInt() : _eventsOf(data).length;
   }
 
-  Future<void> deleteRecording(String recordingId) async {
-    await _client.call(
-      api: SynoApi.recording,
-      method: SynoMethod.delete,
-      params: <String, String?>{'id': recordingId},
-    );
-  }
+  Future<void> setLocked(String id, bool locked) =>
+      _client.setRecordingLocked(id, locked);
+
+  Future<void> deleteRecording(String id) => _client.deleteRecording(id);
+
+  String downloadUrl(String id) => _client.recordingDownloadUrl(id);
 }

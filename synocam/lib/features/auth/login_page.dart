@@ -90,13 +90,13 @@ class _LoginPageState extends State<LoginPage> {
               : e.code == SynoErrorCode.otpInvalid
                   ? '验证码错误或已过期，请等待验证器生成新验证码后重试。'
                   : '管理员要求此账号必须完成两步验证，请输入验证码。';
-          _error = e.message;
+          _error = e.diagnostic;
         });
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _otpFocus.requestFocus();
         });
       } else {
-        setState(() => _error = e.message);
+        setState(() => _error = e.diagnostic);
       }
     } catch (e) {
       setState(() => _error = '$e');
@@ -204,6 +204,7 @@ class _LoginPageState extends State<LoginPage> {
                           })),
                   _switchTile(
                       '记住我', _remember, (v) => setState(() => _remember = v)),
+                  _certTile(),
                   if (_error != null && !_twoFactor) _errorBanner(_error!),
                   const SizedBox(height: 18),
                   SizedBox(
@@ -239,6 +240,17 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ),
       ),
+    );
+  }
+
+  /// 群晖自签证书会导致登录请求直接握手失败；开启后对 Dio 与画面请求同时生效。
+  Widget _certTile() {
+    final state = context.watch<AppState>();
+    return _switchTile(
+      '信任自签名 HTTPS 证书（自有 NAS）',
+      state.prefs.allowUntrustedCert,
+      (v) => state.setAllowUntrustedCert(v),
+      icon: AppIcons.shield,
     );
   }
 
