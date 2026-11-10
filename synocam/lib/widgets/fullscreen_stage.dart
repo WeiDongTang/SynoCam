@@ -11,6 +11,7 @@
 // 关键约束：复用调用方已初始化的 video_player controller，绝不在这里重新
 // 初始化或 dispose（controller 生命周期归原页面 State）。全屏只是把同一个
 // 画面 widget 放到沉浸式全屏布局里，退出后原页面继续播放、不黑屏、不重连。
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -200,7 +201,7 @@ class _FullscreenStageState extends State<FullscreenStage> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
                   decoration: BoxDecoration(
-                    color: Colors.black72,
+                    color: Colors.black.withOpacity(.72),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Text(_hint!,
@@ -325,7 +326,8 @@ class _FullscreenStageState extends State<FullscreenStage> {
             size: 34,
           ),
         )
-      : _iconButton(Icons.play_pause, '播放 / 暂停', () => _controls!.togglePlay(),
+      : _iconButton(
+          Icons.play_circle_filled, '播放 / 暂停', () => _controls!.togglePlay(),
           size: 30);
 
   Widget _iconButton(IconData icon, String tooltip, VoidCallback onTap,
