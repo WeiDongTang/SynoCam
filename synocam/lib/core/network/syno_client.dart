@@ -60,12 +60,23 @@ class SynoClient {
   /// 避免把一次新的登录误判成「旧会话过期」。
   bool _authenticating = false;
 
+  /// 会话失效自动踢出的保护闸门：登录后的首次数据刷新、冷启动恢复期间由
+  /// AppState 调 suppress()/release()，防止辅助端点偶发的 HTML/465 把刚登录
+  /// 成功的用户踢回登录页。纯 Dart 类，逻辑可被核心自检直接覆盖。
+  final SessionExpiryGuard sessionGuard = SessionExpiryGuard();
+
   /// 任何 API 链路识别出会话失效时回调（由 AppState 注册），覆盖
   /// JSON 错误码 106/119/150、HTTP 465 门户页、快照 / 录像下载等所有路径。
   void Function()? onSessionExpired;
 
   void _notifySessionExpired() {
-    if (_authenticating || _session == null) return;
+    if (!sessionGuard.shouldExpire(
+      detected: true,
+      hasSession: _session != null,
+      authenticating: _authenticating,
+    )) {
+      return;
+    }
     onSessionExpired?.call();
   }
 

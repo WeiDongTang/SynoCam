@@ -9,6 +9,7 @@ import '../core/config/feature_flags.dart';
 import '../core/network/cert_policy.dart';
 import '../core/network/syno_api.dart';
 import '../core/network/syno_client.dart';
+import '../core/platform/permissions.dart';
 import '../core/storage/persistent_store.dart';
 import '../data/models/camera.dart';
 import '../data/models/media.dart';
@@ -28,6 +29,28 @@ class AppState extends ChangeNotifier {
   late final MediaRepository _media = MediaRepository(_client);
 
   final FeatureFlags flags = FeatureFlags();
+
+  /// 系统权限通道（通知等），状态与请求均为真实系统行为，非本地模拟。
+  final SystemPermissions systemPermissions = const SystemPermissions();
+
+  NotificationPermission _notificationPermission =
+      NotificationPermission.unknown;
+  NotificationPermission get notificationPermission => _notificationPermission;
+
+  Future<void> refreshNotificationPermission() async {
+    _notificationPermission = await systemPermissions.status();
+    notifyListeners();
+  }
+
+  Future<void> requestNotificationPermission() async {
+    await systemPermissions.request();
+    // Android 的 requestPermissions 是异步弹窗，request() 返回的是发起请求
+    // 那一刻的状态；再取一次真实状态，避免显示过期结果。
+    _notificationPermission = await systemPermissions.status();
+    notifyListeners();
+  }
+
+  Future<bool> openPermissionSettings() => systemPermissions.openSettings();
 
   AppState() {
     // 任何 API 链路（JSON / 快照 / 录像下载 / PTZ）识别出会话失效，
@@ -53,10 +76,15 @@ class AppState extends ChangeNotifier {
   /// SYNO.API.Info 的真实探测结果（失败时含原因），供设置页展示。
   String get discoverDiagnostic => _client.discoverDiagnostic;
 
+  /// 登录成功后首次数据刷新的真实诊断（辅助端点失败不阻断登录）。
+  String? _loginRefreshDiagnostic;
+  String? get loginRefreshDiagnostic => _loginRefreshDiagnostic;
+
   /// 统一的会话失效处理：清内存中的僵尸会话 + 打标记 + 通知 UI 回登录页。
   /// 不请求 NAS、不删持久化的设备令牌与连接信息，保证重登可免验证码并预填。
+  /// 保护窗口内（登录后首次刷新）一律不踢出：刚建立的 SID 是新鲜的。
   void _onClientSessionExpired() {
-    if (_session == null) return;
+    if (_session == null || _client.sessionGuard.suppressed) return;
     _sessionExpired = true;
     _session = null;
     _camerasList = <Camera>[];
@@ -146,6 +174,9 @@ class AppState extends ChangeNotifier {
     await _store.init();
     applyCertificatePolicy(_prefs.allowUntrustedCert);
     _readEventIds = _prefs.readEventIds;
+    // 读取系统通知权限的真实状态（原生层在启动时已发起一次授权请求）。
+    // 权限查询不依赖 NAS，放在最前面，即使 NAS 离线也能正确展示。
+    await refreshNotificationPermission();
     _sessionExpired = _prefs.sessionExpired;
     // 上次已判定会话失效：直接回登录页（带预填与过期提示），不再恢复僵尸
     // SID、也不依赖 NAS 当前是否可达，避免 NAS 离线时卡在报错页面。
@@ -169,11 +200,18 @@ class AppState extends ChangeNotifier {
         }
         await _client.discoverApis();
       }
-      // 每一步后都检查：能力发现或刷新途中若再次判定会话失效，
-      // 立即短路，避免后续调用带着已清空的会话报错。
-      if (_session != null) await refreshCameras();
-      if (_session != null) await refreshMedia();
-      if (_session != null) await refreshNasInfo();
+      // 恢复会话后的首批刷新放进保护窗口：这些辅助端点偶发的 HTML/465
+      // 不能把刚通过探针的合法会话误判为过期。
+      _client.sessionGuard.suppress();
+      try {
+        // 每一步后都检查：能力发现或刷新途中若再次判定会话失效，
+        // 立即短路，避免后续调用带着已清空的会话报错。
+        if (_session != null) await refreshCameras();
+        if (_session != null) await refreshMedia();
+        if (_session != null) await _safeRefresh(refreshNasInfo, 'NAS 能力');
+      } finally {
+        _client.sessionGuard.release();
+      }
     }
     _bootstrapped = true;
     notifyListeners();
@@ -218,10 +256,31 @@ class AppState extends ChangeNotifier {
           (previous?.twoFactor ?? false),
       trustDevice: enableDeviceToken || (previous?.trustDevice ?? false),
     ));
-    await refreshCameras();
-    await refreshMedia();
-    await refreshNasInfo();
+    _loginRefreshDiagnostic = null;
+    // 关键修复：登录成功后的一批数据刷新绝不能因某个辅助端点返回 HTML/465
+    // 就触发「会话失效」把用户踢回登录页。保护窗口内抑制自动踢出，且每个
+    // 刷新单独兜底——刷新失败只记录真实诊断，用户停留在主界面可手动重试。
+    _client.sessionGuard.suppress();
+    try {
+      await _safeRefresh(refreshCameras, '摄像机列表');
+      await _safeRefresh(refreshMedia, '录像与事件');
+      await _safeRefresh(refreshNasInfo, 'NAS 能力');
+    } finally {
+      _client.sessionGuard.release();
+    }
     notifyListeners();
+  }
+
+  /// 尽力而为的刷新：失败保留真实诊断，不向上抛出、不影响已建立的会话。
+  Future<void> _safeRefresh(Future<void> Function() action, String label) async {
+    try {
+      await action();
+    } catch (e) {
+      final note = '$label：$e';
+      _loginRefreshDiagnostic = _loginRefreshDiagnostic == null
+          ? note
+          : '$_loginRefreshDiagnostic\n$note';
+    }
   }
 
   Future<void> logout() async {

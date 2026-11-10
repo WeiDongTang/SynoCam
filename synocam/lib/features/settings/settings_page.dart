@@ -4,6 +4,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/platform/permissions.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_icons.dart';
 import '../../core/utils/launcher.dart';
@@ -93,6 +94,8 @@ class SettingsPage extends StatelessWidget {
             ]),
             const _Section('首页模式（NAS 真实状态）'),
             _homeMode(state),
+            const _Section('系统权限（真实系统状态）'),
+            _permissionsCard(context, state),
             const _Section('当前版本未提供的能力'),
             _group(<Widget>[
               _disabledRow(AppIcons.lock, '密码锁 / Face ID', '需接入本机生物识别与安全存储'),
@@ -293,6 +296,112 @@ class SettingsPage extends StatelessWidget {
             style: TextStyle(fontSize: 11, color: AppColors.sub)),
         trailing: const AppIcon(AppIcons.chevron, size: 16),
         onTap: onTap,
+      );
+
+  /// 通知权限卡片：状态来自系统（iOS UNAuthorizationStatus / Android 13+
+  /// POST_NOTIFICATIONS），按钮触发真实授权弹窗或打开系统设置，不伪造结果。
+  Widget _permissionsCard(BuildContext context, AppState state) {
+    final p = state.notificationPermission;
+    final granted = p.isGranted;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                BadgeIcon(AppIcons.notifications,
+                    tone: granted ? IconTone.green : IconTone.amber),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      const Text('通知权限',
+                          style: TextStyle(
+                              fontSize: 13.5, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 2),
+                      Text(p.label,
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: granted ? AppColors.green : AppColors.sub)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '用于 Surveillance Station 事件提醒。iOS 首次启动会请求'
+              '「提醒 / 角标 / 声音」授权；Android 13+ 会请求 POST_NOTIFICATIONS。',
+              style: TextStyle(fontSize: 11, color: AppColors.sub),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: <Widget>[
+                FilledButton.tonal(
+                  onPressed: () => state.requestNotificationPermission(),
+                  child: const Text('请求通知权限', style: TextStyle(fontSize: 12)),
+                ),
+                OutlinedButton(
+                  onPressed: () async {
+                    final messenger = ScaffoldMessenger.of(context);
+                    final ok = await state.openPermissionSettings();
+                    if (!ok) {
+                      messenger.showSnackBar(const SnackBar(
+                        content: Text('无法打开系统设置，请手动前往系统设置修改权限'),
+                      ));
+                    }
+                  },
+                  child: const Text('打开系统设置', style: TextStyle(fontSize: 12)),
+                ),
+                TextButton(
+                  onPressed: () => state.refreshNotificationPermission(),
+                  child: const Text('刷新状态', style: TextStyle(fontSize: 12)),
+                ),
+              ],
+            ),
+            const Divider(height: 20),
+            Text('其他已声明权限',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.sub)),
+            const SizedBox(height: 4),
+            _permissionLine('网络访问', '连接群晖 NAS（HTTP / HTTPS / 自签证书）'),
+            _permissionLine('本地网络', '发现局域网内的 NAS 与摄像头'),
+            _permissionLine('相册写入', '保存监控快照与录像片段'),
+            _permissionLine('后台刷新 / 通知震动', '事件刷新与提醒'),
+            const SizedBox(height: 6),
+            Text(
+              state.loginRefreshDiagnostic == null
+                  ? '以上权限均在构建时写入 iOS Info.plist 与 Android Manifest。'
+                  : '登录后数据刷新诊断：${state.loginRefreshDiagnostic}',
+              style: TextStyle(fontSize: 10, color: AppColors.faint),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _permissionLine(String name, String usage) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const AppIcon(AppIcons.checkCircle,
+                size: 13, color: AppColors.green),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text('$name · $usage',
+                  style: TextStyle(fontSize: 10.5, color: AppColors.sub)),
+            ),
+          ],
+        ),
       );
 }
 

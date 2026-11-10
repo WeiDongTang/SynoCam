@@ -69,6 +69,10 @@ jobs:
           cp pubspec.yaml /tmp/synocam_pubspec.yaml
           flutter create --platforms=android --project-name synocam --org com.synocam .
           cp /tmp/synocam_pubspec.yaml pubspec.yaml
+      # 原生壳是 flutter create 动态生成的，图标与权限必须在 create 之后注入，
+      # 否则会被模板覆盖。脚本只用 Python 标准库，并自带落盘校验（失败即红）。
+      - name: 注入 App 图标与系统权限配置
+        run: python3 scripts/apply_native_config.py --platform android
       - name: 安装依赖并生成本地化
         run: |
           flutter pub get
@@ -106,6 +110,9 @@ jobs:
           cp pubspec.yaml /tmp/synocam_pubspec.yaml
           flutter create --platforms=ios --project-name synocam --org com.synocam .
           cp /tmp/synocam_pubspec.yaml pubspec.yaml
+      # 同 Android：注入自定义 AppIcon、Info.plist 权限键、AppDelegate 通知授权。
+      - name: 注入 App 图标与系统权限配置
+        run: python3 scripts/apply_native_config.py --platform ios
       - name: 安装依赖并生成本地化
         run: |
           flutter pub get

@@ -366,32 +366,62 @@ class SynoException implements Exception {
 SynoException classifyHttpResponse(int statusCode, String body) {
   final head = body.trimLeft().toLowerCase();
   final lower = body.toLowerCase();
+  final trimmed = body.trim();
   final isHtml = head.startsWith('<!doctype') ||
       head.startsWith('<html') ||
       head.startsWith('<head') ||
       head.startsWith('<body') ||
       (head.contains('<html') && head.contains('<meta'));
-  // 登录页 / DSM 门户页的典型特征。
-  final looksLikeLoginPage = isHtml &&
-      (lower.contains('synology') ||
-          lower.contains('dsm') ||
-          lower.contains('login') ||
-          lower.contains('width=device-width') ||
-          lower.contains('viewport'));
+  final looksJson = head.startsWith('{') || head.startsWith('[');
 
-  final sessionInvalid = statusCode == SynoErrorCode.portalAuthRequired ||
+  // DSM 登录页 / 门户页的「强特征」。
+  // 关键修正：viewport / width=device-width 几乎任何现代网页都有，绝不能
+  // 单独作为登录页依据——否则 SS Web UI、nginx 错误页、License/HomeMode 端点
+  // 偶发返回的 HTML 都会被误判成「会话过期」，把刚登录的用户踢回登录页。
+  final strongLoginMarkers = lower.contains('synology') ||
+      lower.contains('webman') ||
+      lower.contains('__login') ||
+      lower.contains('登录') ||
+      (lower.contains('dsm') && lower.contains('login')) ||
+      (lower.contains('login') &&
+          (lower.contains('password') || lower.contains('passwd')));
+  final isPortalLoginPage = isHtml && strongLoginMarkers;
+
+  // HTTP 465 有「两种语义」，必须区分：
+  //  (a) DSM 门户拦截：返回登录页 HTML（或空 body）→ 会话确实失效，需重登；
+  //  (b) 流 / 二进制端点鉴权失败：返回 JSON {"error":{"code":400}} → 只是
+  //      StmKey / Cookie / 参数问题，是业务错误，绝不能触发全局重新登录。
+  final portalBlocked = statusCode == SynoErrorCode.portalAuthRequired &&
+      !looksJson &&
+      (isHtml || trimmed.isEmpty);
+
+  final sessionInvalid = portalBlocked ||
       statusCode == SynoErrorCode.ipMismatch ||
-      looksLikeLoginPage ||
-      (statusCode == 200 && isHtml) ||
-      (statusCode == 0 && isHtml);
+      isPortalLoginPage ||
+      (statusCode == 0 && isPortalLoginPage);
 
   if (sessionInvalid) {
     final suffix = statusCode > 0 ? '（HTTP $statusCode）' : '';
     return SynoException(
         SynoErrorCode.portalAuthRequired, '登录会话已过期或被 NAS 登出，请重新登录$suffix');
   }
+
+  // JSON 错误体：把 NAS 的真实业务错误码透出来（465 + JSON 400 也走这里），
+  // 只有错误码本身属于会话类（106/119/150/465）才判需要重登。
+  if (looksJson) {
+    final m = RegExp(r'"code"\s*:\s*(\d+)').firstMatch(lower);
+    if (m != null) {
+      final code = int.tryParse(m.group(1)!) ?? 0;
+      final e = SynoException.fromCode(code);
+      if (e.needsReLogin) return e;
+      return SynoException(
+          code, 'NAS 返回业务错误码 $code（HTTP $statusCode）');
+    }
+    return SynoException(SynoErrorCode.unknown,
+        '服务器返回的不是有效 API 数据（HTTP $statusCode）');
+  }
   if (isHtml) {
-    // 其它网页（如 404 / nginx 错误页）保留地址类建议，避免误判会话。
+    // 其它网页（404 / nginx 错误页 / SS Web UI）保留地址类建议，不误判会话。
     return SynoException(SynoErrorCode.unknown,
         'NAS 返回了网页而非 API 数据（HTTP $statusCode），请检查地址/端口/HTTPS 设置');
   }
@@ -440,7 +470,6 @@ FailureView classifyFailure(Object? error) {
           (s.contains('过期') || s.contains('失效') || s.contains('已过期')) ||
       s.contains('重新登录') ||
       s.contains('登录会话') ||
-      s.contains('HTTP 465') ||
       s.contains('被 NAS 登出')) {
     return session;
   }
@@ -466,4 +495,41 @@ FailureView classifyFailure(Object? error) {
 bool needsReLoginError(Object? error) {
   if (error is SynoException && error.needsReLogin) return true;
   return classifyFailure(error).needsReLogin;
+}
+
+/// 会话失效「自动踢出」的保护闸门（纯 Dart，便于自检覆盖）。
+///
+/// 登录后首次数据刷新 / 冷启动恢复期间，SID 是新鲜的；License、HomeMode、
+/// GetLiveViewPath、GetSnapshot 这类辅助端点在外网 / DDNS 下偶发返回 HTML
+/// 门户页或 465 时，不应把刚登录成功的用户踢回登录页。只有保护窗口外的
+/// 真实会话失效才允许触发全局重新登录。
+class SessionExpiryGuard {
+  SessionExpiryGuard();
+
+  bool _suppressed = false;
+
+  bool get suppressed => _suppressed;
+
+  void suppress() => _suppressed = true;
+
+  void release() => _suppressed = false;
+
+  /// [detected] 是否检测到了会话失效信号，[hasSession] 当前是否存在会话，
+  /// [authenticating] 是否正在执行登录请求（登录期间的 403/404 不是旧会话过期）。
+  bool shouldExpire({
+    required bool detected,
+    required bool hasSession,
+    bool authenticating = false,
+  }) =>
+      detected && hasSession && !authenticating && !_suppressed;
+}
+
+/// 规范化两步验证输入：空白视为「未提供」。
+///
+/// 会话失效后回到登录页会预填 2FA 开关，但验证码每次都不同、不能预填；
+/// 旧实现把「留空」硬判为表单校验失败，导致用户点「登录」毫无反应。
+/// 留空时交给已保存的 did 设备令牌免验证，或由服务端 403 自动展开输入框。
+String? normalizeOtp(String? raw) {
+  final s = raw?.trim() ?? '';
+  return s.isEmpty ? null : s;
 }

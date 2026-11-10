@@ -1,6 +1,8 @@
 # 根仓库忽略项
 .DS_Store
 *.log
+__pycache__/
+*.pyc
 
 # Flutter 工程（子目录内另有更细的 .gitignore）
 synocam/.dart_tool/

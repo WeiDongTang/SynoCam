@@ -84,21 +84,33 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _submit() async {
-    if (!(_formKey.currentState?.validate() ?? false)) return;
+    // 表单校验失败不能静默返回——否则用户点「登录」看起来毫无反应。
+    // 尤其是会话过期预填了 2FA 时，验证码为空曾直接拦住整个提交。
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('请补全上方标红的必填项（地址、账号、密码）后重试'),
+        duration: Duration(seconds: 3),
+      ));
+      return;
+    }
     FocusScope.of(context).unfocus();
+    final state = context.read<AppState>();
     setState(() {
       _loading = true;
       _error = null;
       _hint = null;
     });
     try {
-      await context.read<AppState>().login(
+      final otp = normalizeOtp(_otp.text);
+      await state.login(
             host: _host.text,
             account: _account.text,
             password: _password.text,
             https: _https,
             port: _effectivePort(),
-            otpCode: _twoFactor ? _otp.text.trim() : null,
+            // 信任此设备后验证码可留空：靠保存的 did 免验证；若 NAS 仍要求，
+            // 服务端返回 403 会自动展开验证码输入框，不会卡住登录。
+            otpCode: _twoFactor ? otp : null,
             enableDeviceToken: _twoFactor && _trustDevice,
             deviceName: 'SynoCam iOS',
             remember: _remember,
@@ -120,10 +132,10 @@ class _LoginPageState extends State<LoginPage> {
           if (mounted) _otpFocus.requestFocus();
         });
       } else {
-        setState(() => _error = e.diagnostic);
+        if (mounted) setState(() => _error = e.diagnostic);
       }
     } catch (e) {
-      setState(() => _error = '$e');
+      if (mounted) setState(() => _error = '$e');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -230,7 +242,9 @@ class _LoginPageState extends State<LoginPage> {
                   _switchTile(
                       '记住我', _remember, (v) => setState(() => _remember = v)),
                   _certTile(),
-                  if (_error != null && !_twoFactor) _errorBanner(_error!),
+                  // 错误横幅必须始终显示。旧实现用 && !_twoFactor 把 2FA
+                  // 开启时的所有登录失败都吞掉了，用户点登录看不到任何反馈。
+                  if (_error != null) _errorBanner(_error!),
                   const SizedBox(height: 18),
                   SizedBox(
                     height: 52,
@@ -242,11 +256,22 @@ class _LoginPageState extends State<LoginPage> {
                             borderRadius: BorderRadius.circular(13)),
                       ),
                       child: _loading
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white),
+                          ? const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: <Widget>[
+                                SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.white)),
+                                SizedBox(width: 10),
+                                Text('正在连接 NAS…',
+                                    style: TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w600)),
+                              ],
                             )
                           : const Text('登录',
                               style: TextStyle(
@@ -282,10 +307,9 @@ class _LoginPageState extends State<LoginPage> {
   Widget _brand() => Column(
         children: <Widget>[
           Container(
-            width: 64,
-            height: 64,
+            width: 72,
+            height: 72,
             decoration: BoxDecoration(
-              color: AppColors.blue,
               borderRadius: BorderRadius.circular(18),
               boxShadow: <BoxShadow>[
                 BoxShadow(
@@ -294,8 +318,14 @@ class _LoginPageState extends State<LoginPage> {
                     offset: const Offset(0, 8)),
               ],
             ),
-            child:
-                const AppIcon(AppIcons.cameras, size: 32, color: Colors.white),
+            // 与 iOS / Android 主屏幕图标同一份素材，保持品牌一致。
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(18),
+              child: Image.asset(
+                'assets/brand/app_icon_1024.png',
+                fit: BoxFit.cover,
+              ),
+            ),
           ),
           const SizedBox(height: 16),
           const Text('群晖监控',
@@ -350,14 +380,16 @@ class _LoginPageState extends State<LoginPage> {
         ],
         validator: (v) {
           if (!_twoFactor) return null;
-          final s = v?.trim() ?? '';
-          if (s.isEmpty) return '请输入 6 位两步验证验证码';
-          if (s.length != 6) return '验证码应为 6 位数字';
+          // 允许留空：已信任此设备时用 did 免验证；NAS 若仍要求验证码会返回
+          // 403，App 自动展开并聚焦此输入框。不能把「留空」当成硬校验失败。
+          final otp = normalizeOtp(v);
+          if (otp == null) return null;
+          if (otp.length != 6) return '验证码应为 6 位数字';
           return null;
         },
         decoration: InputDecoration(
-          labelText: '两步验证验证码（6 位）',
-          hintText: '000000',
+          labelText: '两步验证验证码（6 位，可留空）',
+          hintText: _trustDevice ? '已信任此设备，可留空' : '000000',
           counterText: '',
           errorStyle: TextStyle(
               color: _otpRejected ? AppColors.red : null, fontSize: 11),
@@ -442,22 +474,54 @@ class _LoginPageState extends State<LoginPage> {
         ),
       );
 
-  Widget _errorBanner(String msg) => Container(
-        margin: const EdgeInsets.only(top: 12),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: AppColors.iconBgRed,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Row(
-          children: <Widget>[
-            const AppIcon(AppIcons.alert, size: 18, color: AppColors.red),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(msg,
-                  style: const TextStyle(fontSize: 12, color: AppColors.red)),
+  Widget _errorBanner(String msg) {
+    final fv = classifyFailure(msg);
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.iconBgRed,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              const AppIcon(AppIcons.alert, size: 18, color: AppColors.red),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(msg,
+                    style: const TextStyle(fontSize: 12, color: AppColors.red)),
+              ),
+            ],
+          ),
+          if (fv.kind == FailureKind.certificate) ...<Widget>[
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () async {
+                  final state = context.read<AppState>();
+                  await state.setAllowUntrustedCert(true);
+                  if (mounted) setState(() => _error = null);
+                },
+                icon: const AppIcon(AppIcons.shield, size: 14),
+                label: const Text('开启「信任自签名 HTTPS 证书」后重试',
+                    style: TextStyle(fontSize: 11.5)),
+              ),
             ),
           ],
-        ),
-      );
+          if (fv.kind == FailureKind.session) ...<Widget>[
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(fv.advice,
+                  style: TextStyle(fontSize: 11, color: AppColors.sub)),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }

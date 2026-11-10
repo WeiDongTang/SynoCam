@@ -38,3 +38,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   generate: true   # 配合 l10n.yaml 生成 AppLocalizations
+  assets:
+    # 与 iOS / Android 主屏幕图标同源（scripts/native 下的尺寸由 CI 注入原生壳，
+    # 不打包进 Flutter asset bundle）。
+    - assets/brand/app_icon_1024.png

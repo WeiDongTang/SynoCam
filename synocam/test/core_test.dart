@@ -431,8 +431,10 @@ void main() {
       expect(classifyHttpResponse(200, html).needsReLogin, isTrue);
       expect(classifyHttpResponse(465, html).code,
           SynoErrorCode.portalAuthRequired);
-      expect(classifyHttpResponse(465, '{"error":{"code":400}}').needsReLogin,
-          isTrue);
+      final json465 = classifyHttpResponse(
+          465, '{"success":false,"error":{"code":400}}');
+      expect(json465.needsReLogin, isFalse);
+      expect(json465.code, 400);
       final notFound = classifyHttpResponse(
           404, '<html><body><h1>404 Not Found</h1></body></html>');
       expect(notFound.needsReLogin, isFalse);
@@ -450,6 +452,45 @@ void main() {
       expect(needsReLoginError(SynoException.fromCode(465)), isTrue);
       expect(needsReLoginError('MjpegException: 登录会话已过期，请重新登录'), isTrue);
       expect(needsReLoginError('错误码 102'), isFalse);
+    });
+
+    test('普通 HTML / 业务错误不误判为会话失效', () {
+      final webUi = '<!DOCTYPE html><html><head>'
+          '<meta name="viewport" content="width=device-width"></head>'
+          '<body><div id="surveillance-station">Loading...</div></body></html>';
+      expect(classifyHttpResponse(200, webUi).needsReLogin, isFalse);
+      expect(classifyHttpResponse(200, webUi).message.contains('地址/端口/HTTPS'),
+          isTrue);
+      expect(classifyHttpResponse(465, '').needsReLogin, isTrue);
+      expect(classifyHttpResponse(465, '\xff\xd8\xff\xe0binary').needsReLogin,
+          isFalse);
+      expect(classifyFailure('NAS 返回业务错误码 400（HTTP 465）').needsReLogin,
+          isFalse);
+    });
+
+    test('登录保护窗口：suppress 期间不踢出刚登录的会话', () {
+      final guard = SessionExpiryGuard();
+      expect(guard.shouldExpire(detected: true, hasSession: true), isTrue);
+      guard.suppress();
+      expect(guard.suppressed, isTrue);
+      expect(guard.shouldExpire(detected: true, hasSession: true), isFalse);
+      expect(
+          guard.shouldExpire(
+              detected: true, hasSession: true, authenticating: true),
+          isFalse);
+      guard.release();
+      expect(guard.suppressed, isFalse);
+      expect(guard.shouldExpire(detected: true, hasSession: true), isTrue);
+      expect(guard.shouldExpire(detected: true, hasSession: false), isFalse);
+      expect(guard.shouldExpire(detected: false, hasSession: true), isFalse);
+    });
+
+    test('两步验证输入留空不再阻塞登录提交', () {
+      expect(normalizeOtp(null), isNull);
+      expect(normalizeOtp(''), isNull);
+      expect(normalizeOtp('   '), isNull);
+      expect(normalizeOtp(' 123456 '), '123456');
+      expect(normalizeOtp('123'), '123');
     });
 
     test('上次连接信息序列化往返且绝不含密码', () {

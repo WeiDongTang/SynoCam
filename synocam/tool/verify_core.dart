@@ -443,10 +443,10 @@ Future<void> main() async {
       'HTTP 465 + 登录页 HTML → 会话失效（不再降级错误码 100）');
   check(classifyHttpResponse(200, loginHtml).needsReLogin,
       'HTTP 200 + 登录页 HTML（门户重定向）→ 会话失效');
-  check(
-      classifyHttpResponse(465, '{"success":false,"error":{"code":400}}')
-          .needsReLogin,
-      '465 无论 body 内容都判会话失效');
+  final json465 = classifyHttpResponse(
+      465, '{"success":false,"error":{"code":400}}');
+  check(!json465.needsReLogin && json465.code == 400,
+      '465 + JSON 业务错误 → 流端点问题，不误判会话失效（修复登录后被踢出）');
   final notFound = classifyHttpResponse(
       404, '<html><body><h1>404 Not Found</h1></body></html>');
   check(!notFound.needsReLogin, '404 普通网页不误判为会话失效');
@@ -455,6 +455,48 @@ Future<void> main() async {
       '非 HTML 非 JSON 错误不误判为会话失效');
   check(!classifyHttpResponse(200, '{"success":true,"data":{}}').needsReLogin,
       '正常 JSON 响应不受影响');
+
+  print('── 防止把普通网页误判为会话过期（本轮登录被踢出的根因）──');
+  final ssWebUi = '<!DOCTYPE html><html><head><meta name="viewport" '
+      'content="width=device-width"></head><body>'
+      '<div id="surveillance-station">Loading...</div></body></html>';
+  check(!classifyHttpResponse(200, ssWebUi).needsReLogin,
+      '200 + 普通 HTML（含 viewport / width=device-width）不误判会话失效');
+  check(classifyHttpResponse(200, ssWebUi).message.contains('地址/端口/HTTPS'),
+      '普通 HTML 保留地址/端口/HTTPS 类建议');
+  check(classifyHttpResponse(465, '').needsReLogin,
+      '465 + 空 body（门户拦截）判会话失效');
+  check(!classifyHttpResponse(465, '\xff\xd8\xff\xe0binary').needsReLogin,
+      '465 + 二进制乱码不误判会话失效');
+  check(!classifyFailure('NAS 返回业务错误码 400（HTTP 465）').needsReLogin,
+      '465 文本但属业务错误时不误判会话失效');
+
+  print('── 登录保护窗口（刚登录不被辅助端点踢回登录页）──');
+  final guard = SessionExpiryGuard();
+  check(guard.shouldExpire(detected: true, hasSession: true),
+      '默认允许真实会话失效触发重登');
+  guard.suppress();
+  check(guard.suppressed, 'suppress() 生效');
+  check(!guard.shouldExpire(detected: true, hasSession: true),
+      '登录后首次刷新保护窗口内不踢出（核心修复）');
+  check(!guard.shouldExpire(
+      detected: true, hasSession: true, authenticating: true),
+      '登录请求期间不踢出');
+  guard.release();
+  check(!guard.suppressed &&
+      guard.shouldExpire(detected: true, hasSession: true),
+      'release() 后恢复正常判定');
+  check(!guard.shouldExpire(detected: true, hasSession: false),
+      '无会话时不触发重登');
+  check(!guard.shouldExpire(detected: false, hasSession: true),
+      '未检测到失效信号时不触发重登');
+
+  print('── 两步验证输入（会话过期预填 2FA 不阻塞登录）──');
+  check(normalizeOtp(null) == null, 'null 视为未提供验证码');
+  check(normalizeOtp('') == null, '空串视为未提供验证码');
+  check(normalizeOtp('   ') == null, '纯空格视为未提供验证码');
+  check(normalizeOtp(' 123456 ') == '123456', '有效验证码去首尾空格');
+  check(normalizeOtp('123') == '123', '短验证码透传给表单校验提示');
 
   print('── UI 错误分类（不再一律误报地址/权限问题）──');
   check(classifyFailure(SynoException.fromCode(465)).needsReLogin,
