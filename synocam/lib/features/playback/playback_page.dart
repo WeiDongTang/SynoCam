@@ -49,10 +49,15 @@ class PlaybackPage extends StatefulWidget {
     super.key,
     required this.recording,
     required this.camera,
+    this.seekTo,
   });
 
   final Recording recording;
   final Camera camera;
+
+  /// 用户在时间轴上选中的绝对时刻。旧实现只传片段，播放器永远从片段
+  /// 起点（或「最近片段」起点）开始，表现为「回放的不是选中时刻」。
+  final DateTime? seekTo;
 
   @override
   State<PlaybackPage> createState() => _PlaybackPageState();
@@ -74,6 +79,10 @@ class _PlaybackPageState extends State<PlaybackPage> {
   late DateTime _dayStart;
   List<Recording> _clips = <Recording>[];
 
+  /// 本次加载要定位到的绝对时刻（可随拖动变化）。片段切换 / 列表点选时
+  /// 同步更新，确保播放器总是从用户选中的那一刻起播，而不是片段开头。
+  late DateTime _seekTarget;
+
   _PlaybackPhase _phase = _PlaybackPhase.loading;
   bool _videoReady = false;
   bool _playing = false;
@@ -92,7 +101,8 @@ class _PlaybackPageState extends State<PlaybackPage> {
     _active = widget.recording;
     final d = widget.recording.startTime;
     _dayStart = DateTime(d.year, d.month, d.day);
-    _fraction = TimelineMath.fractionOf(widget.recording.startTime, _dayStart);
+    _seekTarget = widget.seekTo ?? widget.recording.startTime;
+    _fraction = TimelineMath.fractionOf(_seekTarget, _dayStart);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final state = context.read<AppState>();
@@ -158,7 +168,9 @@ class _PlaybackPageState extends State<PlaybackPage> {
       await c.initialize();
       c.addListener(_onVideoTick);
       await c.setPlaybackSpeed(_speed);
-      await c.play();
+      // 关键修复：下载的是整段片段，但用户选的是其中某一时刻。按
+      // 「选中时刻 - 片段起点」seek 之后再播放，而不是永远从头开始。
+      await _seekToTarget(c);
       if (mounted) {
         setState(() {
           _controller = c;
@@ -191,8 +203,14 @@ class _PlaybackPageState extends State<PlaybackPage> {
     // 与 Recording/Download 使用同一段真实时间跨度，避免「下载取 60 秒、
     // 回放流只取 1 秒」造成画面内容与标注时间不一致。
     try {
-      final from = _active.startTime.millisecondsSinceEpoch ~/ 1000;
-      final to = _active.playbackEndTime.millisecondsSinceEpoch ~/ 1000;
+      // startTime 用「用户选中的时刻」而非片段起点，保证回放流也从这一刻
+      // 开始，与录像文件下载链路的起播点一致。
+      final fromDt = _seekTarget.isBefore(_active.startTime)
+          ? _active.startTime
+          : _seekTarget;
+      final from = fromDt.millisecondsSinceEpoch ~/ 1000;
+      var to = _active.playbackEndTime.millisecondsSinceEpoch ~/ 1000;
+      if (to <= from) to = from + 60;
       final url =
           state.liveStreamUrl(widget.camera, startTime: from, endTime: to);
       final client =
@@ -256,6 +274,19 @@ class _PlaybackPageState extends State<PlaybackPage> {
     }
   }
 
+  /// 把播放器定位到用户选中的绝对时刻。下载文件是整段片段，故偏移为
+  /// 「选中时刻 - 片段起点」，并夹到播放器真实时长内，避免 seek 越界。
+  Future<void> _seekToTarget(VideoPlayerController c) async {
+    if (!c.value.isInitialized) return;
+    var secs = TimelineMath.seekSecondsInClip(_active, _seekTarget);
+    final max = c.value.duration.inSeconds;
+    if (max > 0 && secs > max) secs = max;
+    final target = Duration(seconds: secs);
+    _videoPosition.value = target;
+    if (secs > 0) await c.seekTo(target);
+    if (!c.value.isPlaying) await c.play();
+  }
+
   /// 播放进度回调：只更新 notifier，绝不 setState 重建整页画面。
   void _onVideoTick() {
     final c = _controller;
@@ -288,18 +319,22 @@ class _PlaybackPageState extends State<PlaybackPage> {
 
   Future<void> _onScrubEnd(double v) async {
     final t = TimelineMath.timeAt(v, _dayStart);
-    final target = TimelineMath.nearestClip(_clips, t);
+    // 先精确命中：拖动到某片段内部时就用该片段，而不是无条件回退到
+    // 「开始时间最近的片段」（旧行为会跳到临近片段，时间对不上）。
+    final target =
+        TimelineMath.clipAt(_clips, t) ?? TimelineMath.nearestClip(_clips, t);
     if (target == null) return;
+    _seekTarget = t;
     if (target.id != _active.id) {
       setState(() => _active = target);
       await _load(context.read<AppState>());
       return;
     }
-    // 同一片段内拖动：直接 seek 到相对位置。
-    if (_videoReady) {
-      final total = target.playbackDurationSeconds;
-      final offset = t.difference(target.startTime).inSeconds / total;
-      await _seekVideo(offset.clamp(0.0, 1.0).toDouble());
+    // 同一片段内拖动：按「选中时刻 - 片段起点」的绝对秒数 seek，
+    // 不用片段标称时长作分母（与播放器真实时长可能不一致）。
+    final c = _controller;
+    if (_videoReady && c != null && c.value.isInitialized) {
+      await _seekToTarget(c);
     }
   }
 
@@ -597,6 +632,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
                   bottom: 0,
                   child: GestureDetector(
                     onTap: () {
+                      _seekTarget = r.startTime;
                       setState(() {
                         _active = r;
                         _fraction = left;
@@ -656,6 +692,7 @@ class _PlaybackPageState extends State<PlaybackPage> {
               style: TextStyle(fontSize: 10, color: AppColors.faint)),
           onTap: () {
             if (r.id == _active.id) return;
+            _seekTarget = r.startTime;
             setState(() {
               _active = r;
               _fraction = TimelineMath.fractionOf(r.startTime, _dayStart);

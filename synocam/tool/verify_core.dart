@@ -520,6 +520,39 @@ Future<void> main() async {
   check(TimelineMath.nearestClip(<Recording>[], day) == null,
       '无片段时返回 null（UI 显示真实空态）');
 
+  // 修复「回放的是临近时间，不是选中时刻」：缺 stopTime 的片段 endTime 只有
+  // +1 秒，旧 clipAt 几乎永不命中，只能回退到「最近片段」。现在按回放跨度判定。
+  final noStopClip = Recording(
+      id: 'c3',
+      cameraId: 1,
+      cameraName: '缺结束时间',
+      startTime: day.add(const Duration(hours: 12)),
+      durationSeconds: 0);
+  check(
+      TimelineMath.clipAt(<Recording>[noStopClip],
+              day.add(const Duration(hours: 12, seconds: 30))) ==
+          noStopClip,
+      '缺 stopTime 的片段按 replay 跨度命中（不再只回退最近片段）');
+  check(
+      TimelineMath.clipAt(<Recording>[noStopClip],
+              day.add(const Duration(hours: 12, minutes: 2))) ==
+          null,
+      '超出回放跨度仍不命中');
+  check(
+      TimelineMath.seekSecondsInClip(
+              clip, day.add(const Duration(hours: 10, minutes: 3))) ==
+          180,
+      '选中时刻换算为片段内偏移秒数（回放从该秒起播）');
+  check(
+      TimelineMath.seekSecondsInClip(clip, day.add(const Duration(hours: 9))) ==
+          0,
+      '选中时刻早于片段起点时偏移夹到 0');
+  check(
+      TimelineMath.seekSecondsInClip(
+              clip, day.add(const Duration(hours: 11))) ==
+          600,
+      '选中时刻晚于片段末尾时偏移夹到片段时长');
+
   print('── 会话失效闭环（HTTP 465 / 登录页 HTML）──');
   check(SynoErrorCode.portalAuthRequired == 465, 'DSM 门户拦截码 465');
   check(SynoErrorCode.ipMismatch == 150, '登录来源 IP 变化码 150');

@@ -172,11 +172,24 @@ class TimelineMath {
       Duration(seconds: (fraction.clamp(0.0, 1.0) * secondsPerDay).round()));
 
   /// 命中某个录像片段（含首尾）。
+  /// 用 playbackEndTime 而非 endTime：SS 常缺 stopTime，此时 endTime 只有
+  /// startTime + 1 秒，拖动几乎永远命不中片段，只能回退到「最近片段」，
+  /// 表现为「回放的不是选中时刻，而是临近时间」。回放本身按 60 秒跨度
+  /// 请求，命中判定必须与之用同一跨度。
   static Recording? clipAt(List<Recording> clips, DateTime t) {
     for (final r in clips) {
-      if (!t.isBefore(r.startTime) && !t.isAfter(r.endTime)) return r;
+      if (!t.isBefore(r.startTime) && !t.isAfter(r.playbackEndTime)) return r;
     }
     return null;
+  }
+
+  /// 选中时刻在该片段内的相对偏移（秒），供「从选中时刻起播」使用。
+  /// 超出片段范围时夹到 [0, playbackDurationSeconds]，避免 seek 越界。
+  static int seekSecondsInClip(Recording r, DateTime t) {
+    final s = t.difference(r.startTime).inSeconds;
+    if (s <= 0) return 0;
+    final max = r.playbackDurationSeconds;
+    return s > max ? max : s;
   }
 
   /// 拖动时先尝试命中，未命中则取开始时间最接近的片段。

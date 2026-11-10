@@ -518,6 +518,37 @@ void main() {
           clip);
       expect(TimelineMath.nearestClip(<Recording>[], day), isNull);
     });
+
+    test('命中按回放跨度、选中时刻换算为片段内偏移', () {
+      final noStop = Recording(
+        id: 'c3',
+        cameraId: 1,
+        cameraName: '缺结束时间',
+        startTime: day.add(const Duration(hours: 12)),
+        durationSeconds: 0,
+      );
+      // 缺 stopTime 时 endTime 只有 +1 秒，旧逻辑拖动永不命中，只回退最近片段。
+      expect(
+          TimelineMath.clipAt(<Recording>[noStop],
+              day.add(const Duration(hours: 12, seconds: 30))),
+          noStop);
+      expect(
+          TimelineMath.clipAt(<Recording>[noStop],
+              day.add(const Duration(hours: 12, minutes: 2))),
+          isNull);
+      expect(
+          TimelineMath.seekSecondsInClip(
+              clip, day.add(const Duration(hours: 10, minutes: 3))),
+          180);
+      expect(
+          TimelineMath.seekSecondsInClip(
+              clip, day.add(const Duration(hours: 9))),
+          0);
+      expect(
+          TimelineMath.seekSecondsInClip(
+              clip, day.add(const Duration(hours: 11))),
+          600);
+    });
   });
 
   group('会话失效闭环（HTTP 465 / 登录页 HTML）', () {

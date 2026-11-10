@@ -16,6 +16,7 @@ import '../../widgets/app_icon.dart';
 import '../../widgets/live_clock.dart';
 import '../../widgets/live_snapshot.dart';
 import '../cameras/camera_edit_page.dart';
+import '../playback/inline_playback.dart';
 import '../playback/playback_page.dart';
 
 class SingleViewPage extends StatefulWidget {
@@ -32,6 +33,13 @@ class _SingleViewPageState extends State<SingleViewPage> {
   double _scrubFraction = 0;
   bool _scrubReady = false;
   List<Map<String, dynamic>> _presets = <Map<String, dynamic>>[];
+
+  /// 非 null 时：上方预览区就地回放该片段的该时刻（拖动时间轴后设置），
+  /// 用户不必跳转到 PlaybackPage。null = 回到实时预览。
+  Recording? _inlineClip;
+  DateTime? _inlineAt;
+
+  bool get _inInlinePlayback => _inlineClip != null && _inlineAt != null;
 
   @override
   void initState() {
@@ -100,6 +108,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
         children: <Widget>[
           _bigImage(context, state, cam),
           const SizedBox(height: 10),
+          if (_inInlinePlayback) _inlineHint(state),
+          if (_inInlinePlayback) const SizedBox(height: 8),
           _streamActions(context, state, cam),
           const SectionLabel('快捷操作'),
           _actions(context, state, cam),
@@ -114,64 +124,106 @@ class _SingleViewPageState extends State<SingleViewPage> {
     );
   }
 
-  Widget _bigImage(BuildContext context, AppState state, Camera cam) =>
-      ClipRRect(
+  Widget _bigImage(BuildContext context, AppState state, Camera cam) {
+    // 拖动时间轴后：预览区就地切换为回放视口，不再需要跳页。
+    if (_inInlinePlayback) {
+      return ClipRRect(
         borderRadius: BorderRadius.circular(16),
         child: AspectRatio(
           aspectRatio: 16 / 9,
-          child: Stack(
-            fit: StackFit.expand,
-            children: <Widget>[
-              LiveSnapshot(camera: cam),
-              const DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: <Color>[
-                      Color(0x47000000),
-                      Colors.transparent,
-                      Colors.transparent,
-                      Color(0x99000000),
-                    ],
-                    stops: <double>[0, .24, .55, 1],
-                  ),
-                ),
-              ),
-              Positioned(
-                top: 11,
-                left: 12,
-                right: 12,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: <Widget>[
-                    _osdChip('● LIVE', AppColors.red),
-                    _osdChip(cam.codec.isEmpty ? '实时预览' : cam.codec, null),
-                  ],
-                ),
-              ),
-              Positioned(
-                left: 13,
-                right: 13,
-                bottom: 11,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: <Widget>[
-                    Text(cam.name,
-                        style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white)),
-                    LiveClock(
-                      offsetMinutes: state.timeOffsetMinutes,
-                      style:
-                          const TextStyle(fontSize: 10, color: Colors.white70),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+          child: InlinePlayback(
+            camera: cam,
+            recording: _inlineClip!,
+            seekTo: _inlineAt!,
+            onExit: () => setState(() {
+              _inlineClip = null;
+              _inlineAt = null;
+            }),
+            onOpenFull: () =>
+                _openPlayback(context, cam, _inlineClip!, at: _inlineAt),
           ),
+        ),
+      );
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: AspectRatio(
+        aspectRatio: 16 / 9,
+        child: Stack(
+          fit: StackFit.expand,
+          children: <Widget>[
+            LiveSnapshot(camera: cam),
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: <Color>[
+                    Color(0x47000000),
+                    Colors.transparent,
+                    Colors.transparent,
+                    Color(0x99000000),
+                  ],
+                  stops: <double>[0, .24, .55, 1],
+                ),
+              ),
+            ),
+            Positioned(
+              top: 11,
+              left: 12,
+              right: 12,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: <Widget>[
+                  _osdChip('● LIVE', AppColors.red),
+                  _osdChip(cam.codec.isEmpty ? '实时预览' : cam.codec, null),
+                ],
+              ),
+            ),
+            Positioned(
+              left: 13,
+              right: 13,
+              bottom: 11,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: <Widget>[
+                  Text(cam.name,
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white)),
+                  LiveClock(
+                    offsetMinutes: state.timeOffsetMinutes,
+                    style: const TextStyle(fontSize: 10, color: Colors.white70),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _inlineHint(AppState state) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(11),
+          border: Border.all(color: AppColors.line),
+        ),
+        child: Row(
+          children: <Widget>[
+            const AppIcon(AppIcons.timeline, size: 16, color: AppColors.blue),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '正在就地回放 ${state.timeLabel(_inlineAt!)}；'
+                '继续拖动下方时间轴可从任意时刻回放，点画面「返回实时」恢复。',
+                style: TextStyle(fontSize: 10.5, color: AppColors.sub),
+              ),
+            ),
+          ],
         ),
       );
 
@@ -300,10 +352,33 @@ class _SingleViewPageState extends State<SingleViewPage> {
     }
   }
 
-  void _openPlayback(BuildContext context, Camera cam, Recording r) {
+  void _openPlayback(BuildContext context, Camera cam, Recording r,
+      {DateTime? at}) {
     Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (_) => PlaybackPage(recording: r, camera: cam),
+      builder: (_) => PlaybackPage(recording: r, camera: cam, seekTo: at),
     ));
+  }
+
+  /// 拖动时间轴松手后，直接在上方预览区就地回放选中的时刻。
+  /// 旧实现 Slider 只有 onChanged（仅更新文字），没有任何回放动作，
+  /// 用户必须再点「回放」按钮跳页才能看到画面。
+  void _scrubReplay(double fraction, DateTime dayStart) {
+    final t = TimelineMath.timeAt(fraction, dayStart);
+    final state = context.read<AppState>();
+    final clips = state.recordings
+        .where((r) =>
+            r.cameraId == widget.camera.id && !r.startTime.isBefore(dayStart))
+        .toList();
+    final hit =
+        TimelineMath.clipAt(clips, t) ?? TimelineMath.nearestClip(clips, t);
+    if (hit == null) {
+      _snack('该时刻附近没有录像片段（数据来自 NAS 真实查询）');
+      return;
+    }
+    setState(() {
+      _inlineClip = hit;
+      _inlineAt = t;
+    });
   }
 
   Widget _ptz(BuildContext context, AppState state, Camera cam) {
@@ -433,7 +508,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
           children: <Widget>[
             Text('00:00',
                 style: TextStyle(fontSize: 10, color: AppColors.faint)),
-            Text('拖动定位 ${state.timeLabel(t)}',
+            Text('松开即从 ${state.timeLabel(t)} 回放',
                 style:
                     const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
             Text('24:00',
@@ -443,6 +518,7 @@ class _SingleViewPageState extends State<SingleViewPage> {
         Slider(
           value: _scrubFraction,
           onChanged: (v) => setState(() => _scrubFraction = v),
+          onChangeEnd: (v) => _scrubReplay(v, todayStart),
         ),
         _clipTrack(context, cam, clips, todayStart),
         const SizedBox(height: 10),
@@ -451,8 +527,8 @@ class _SingleViewPageState extends State<SingleViewPage> {
         ...clips.take(8).map((r) => _clipTile(context, state, cam, r)),
         const SizedBox(height: 6),
         Text(
-          '拖动时间轴定位到任意时刻，点「回放」进入 App 内播放器；'
-          '色块与列表项也可直接打开对应片段（不再跳转浏览器）。',
+          '拖动时间轴，松开后画面就地回放该时刻（无需跳页）；'
+          '「完整回放」进入带倍速/进度的播放器，色块与列表项打开对应片段。',
           style: TextStyle(fontSize: 10.5, color: AppColors.faint),
         ),
       ],
@@ -520,10 +596,11 @@ class _SingleViewPageState extends State<SingleViewPage> {
                   : '最近片段：${hit.eventType} · ${hit.durationLabel}',
               style: TextStyle(fontSize: 10.5, color: AppColors.faint)),
           trailing: FilledButton.icon(
-            onPressed:
-                hit == null ? null : () => _openPlayback(context, cam, hit),
+            onPressed: hit == null
+                ? null
+                : () => _openPlayback(context, cam, hit, at: t),
             icon: const AppIcon(AppIcons.play, size: 14, color: Colors.white),
-            label: const Text('回放', style: TextStyle(fontSize: 11)),
+            label: const Text('完整回放', style: TextStyle(fontSize: 11)),
           ),
         ),
       );

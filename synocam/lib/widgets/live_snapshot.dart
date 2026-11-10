@@ -67,6 +67,13 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
 
   /// 每帧只更新它，画面区局部重绘，不触发整棵组件树重建。
   final ValueNotifier<Uint8List?> _frames = ValueNotifier<Uint8List?>(null);
+
+  /// 「加载态 → 画面」是结构性切换，必须有一个独立的可监听开关驱动 build
+  /// 重建。旧实现直接读 _frames.value 判断，但加载态分支里没有任何订阅者，
+  /// 首帧只更新 ValueNotifier 并不会触发 build，UI 会永久停在「正在获取画面」，
+  /// 直到外部 AppState 通知（点刷新）才重建切过去。
+  /// 该开关只在首帧 / 切摄像机时变化一次，之后每帧仍只走 _frames 局部重绘。
+  final ValueNotifier<bool> _hasFrame = ValueNotifier<bool>(false);
   String? _error;
   String? _fallbackNote;
   bool _busy = false;
@@ -87,6 +94,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     super.didUpdateWidget(old);
     if (old.camera.id != widget.camera.id) {
       _frames.value = null; // 切摄像机不留旧画面
+      _hasFrame.value = false; // 回到加载态，等待新摄像机首帧
     }
     if (old.camera.id != widget.camera.id ||
         old.paused != widget.paused ||
@@ -102,7 +110,27 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     _pollTimer?.cancel();
     _watchdog?.cancel();
     _frames.dispose();
+    _hasFrame.dispose();
     super.dispose();
+  }
+
+  /// 收到一帧：首帧时翻转开关触发结构性切换，之后只更新画面 notifier。
+  /// 两种模式（连续流 / 快照轮询）都必须走这里，避免「刷新才出画面」。
+  void _onFrame(Uint8List frame) {
+    if (!mounted) return;
+    _frames.value = frame;
+    if (!_hasFrame.value) _hasFrame.value = true;
+    if (_error != null) {
+      // 从错误恢复，清掉错误角标（只发生一次，不影响逐帧性能）。
+      _error = null;
+      _scheduleRebuild();
+    }
+  }
+
+  /// 在 build 之外安全地触发一次重建（错误角标、降级提示等结构性变化）。
+  void _scheduleRebuild() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   void _reset() {
@@ -146,10 +174,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     _busy = true;
     try {
       final bytes = await state.snapshotBytes(widget.camera);
-      if (mounted) {
-        _frames.value = Uint8List.fromList(bytes);
-        if (_error != null) setState(() => _error = null);
-      }
+      _onFrame(Uint8List.fromList(bytes));
     } catch (e) {
       // 会话失效：上报全局恢复闭环，不再无意义地反复重试快照。
       if (needsReLoginError(e)) {
@@ -177,9 +202,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
       (Uint8List frame) {
         if (!mounted) return;
         _watchdog?.cancel();
-        _frames.value = frame;
-        // 只有从错误恢复时才需要一次 setState，正常帧不重建组件树。
-        if (_error != null && mounted) setState(() => _error = null);
+        _onFrame(frame);
       },
       onError: (Object e) {
         if (!mounted) return;
@@ -194,7 +217,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     );
     // 流挂着但一直不出帧时也要降级，避免永久黑屏。
     _watchdog = Timer(const Duration(seconds: 6), () {
-      if (!mounted || _frames.value != null || _sub == null) return;
+      if (!mounted || _hasFrame.value || _sub == null) return;
       _fallbackToPolling(state, '连续流 6 秒内未返回画面');
     });
   }
@@ -205,6 +228,7 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     _watchdog?.cancel();
     _watchdog = null;
     _fallbackNote = reason;
+    _scheduleRebuild(); // 让降级提示角标即时显示
     _startPolling(state);
   }
 
@@ -227,58 +251,66 @@ class _LiveSnapshotState extends State<LiveSnapshot> {
     if (!widget.camera.isOnline) {
       return _placeholder('摄像机已停用');
     }
-    if (_frames.value == null && _error != null) {
-      final fv = classifyFailure(_error);
-      return _ErrorTile(
-        message: fv.title,
-        detail: '${fv.advice}\n$_error\n${state.mediaDiagnostic}',
-        onRetry: () {
-          setState(() => _error = null);
-          _start();
-        },
-      );
-    }
-    if (_frames.value == null) {
-      return Container(
-        color: const Color(0xFF22262F),
-        alignment: Alignment.center,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+    // 「加载态 / 错误态 / 画面」是结构性切换，由 _hasFrame 监听驱动：
+    // 首帧到达时翻转一次即重建进入画面分支并挂载 _FrameView；此后每帧只
+    // 更新 _frames，由 _FrameView 局部重绘，不重建整棵组件树。
+    return ValueListenableBuilder<bool>(
+      valueListenable: _hasFrame,
+      builder: (BuildContext context, bool hasFrame, Widget? _) {
+        if (!hasFrame) {
+          if (_error != null) {
+            final fv = classifyFailure(_error);
+            return _ErrorTile(
+              message: fv.title,
+              detail: '${fv.advice}\n$_error\n${state.mediaDiagnostic}',
+              onRetry: () {
+                setState(() => _error = null);
+                _start();
+              },
+            );
+          }
+          return Container(
+            color: const Color(0xFF22262F),
+            alignment: Alignment.center,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2)),
+                const SizedBox(height: 8),
+                Text('正在获取 $_modeLabel画面…',
+                    style:
+                        const TextStyle(fontSize: 10, color: Colors.white54)),
+              ],
+            ),
+          );
+        }
+        return Stack(
+          fit: StackFit.expand,
           children: <Widget>[
-            const SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(strokeWidth: 2)),
-            const SizedBox(height: 8),
-            Text('正在获取 $_modeLabel画面…',
-                style: const TextStyle(fontSize: 10, color: Colors.white54)),
+            Positioned.fill(
+              child: RepaintBoundary(
+                child: _FrameView(notifier: _frames, fit: widget.fit),
+              ),
+            ),
+            if (_fallbackNote != null)
+              Positioned(
+                left: 6,
+                bottom: 6,
+                child: _chip('$_modeLabel模式 · ${_shortNote(_fallbackNote!)}',
+                    AppColors.amber),
+              ),
+            if (_error != null)
+              Positioned(
+                right: 6,
+                top: 6,
+                child: _chip('刷新失败，点此重试', AppColors.red),
+              ),
           ],
-        ),
-      );
-    }
-
-    return Stack(
-      fit: StackFit.expand,
-      children: <Widget>[
-        Positioned.fill(
-          child: RepaintBoundary(
-            child: _FrameView(notifier: _frames, fit: widget.fit),
-          ),
-        ),
-        if (_fallbackNote != null)
-          Positioned(
-            left: 6,
-            bottom: 6,
-            child: _chip('$_modeLabel模式 · ${_shortNote(_fallbackNote!)}',
-                AppColors.amber),
-          ),
-        if (_error != null)
-          Positioned(
-            right: 6,
-            top: 6,
-            child: _chip('刷新失败，点此重试', AppColors.red),
-          ),
-      ],
+        );
+      },
     );
   }
 
