@@ -143,6 +143,8 @@ class _InlinePlaybackState extends State<InlinePlayback> {
       final c = VideoPlayerController.file(file);
       await c.initialize();
       c.addListener(_tick);
+      // 官方 MP4 录像自带音轨；显式解除静音，避免「回放没有声音」。
+      await c.setVolume(1.0);
       await c.setPlaybackSpeed(_speed);
       await _seekToFileStart(c, rec.startsAt);
       if (mounted) {
@@ -191,25 +193,12 @@ class _InlinePlaybackState extends State<InlinePlayback> {
     if (!c.value.isPlaying) await c.play();
   }
 
+  /// 官方 SS 不提供按时刻历史帧接口，回放只认真实录像文件；下载失败时
+  /// 展示 NAS 真实诊断，绝不降级到实时画面冒充回放。
   Future<void> _loadHistoryFrame(AppState state, DateTime at) async {
-    try {
-      final bytes = await state.recordingFrameAt(widget.camera, at);
-      if (mounted) {
-        setState(() {
-          _frame.value = Uint8List.fromList(bytes);
-          _phase = _Phase.frame;
-          _sourceLabel = 'NAS 历史帧（按时刻录像快照）';
-          _frameTimeLabel = state.timeFull(at);
-        });
-      }
-      return;
-    } catch (e) {
-      if (needsReLoginError(e)) {
-        state.reportSessionExpired();
-        return;
-      }
-      _diagnostic += '\n按时刻历史帧失败：$e';
-    }
+    _diagnostic += '\n定位时刻 ${state.timeFull(at)}；已尝试官方 '
+        'Recording/Download 与 Recording/Stream，NAS 未返回可用录像文件。'
+        '\n请确认账号具备「录像回放」权限、录像未被轮换删除。';
     if (mounted) {
       setState(() {
         _phase = _Phase.failed;

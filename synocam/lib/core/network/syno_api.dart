@@ -16,6 +16,13 @@ class SynoEndpoints {
   SynoEndpoints._();
 
   static const String authCgi = '/webapi/auth.cgi';
+
+  /// 群晖 SS 的 HLS 实时视频流与独立音频流 CGI（官方文档未列，实证可用）。
+  /// 视频流本身不含音轨，声音必须走 audioStreaming.cgi 单独播放。
+  static const String videoStreamingCgi =
+      '/webapi/SurveillanceStation/videoStreaming.cgi';
+  static const String audioStreamingCgi =
+      '/webapi/SurveillanceStation/audioStreaming.cgi';
   static const String entryCgi = '/webapi/entry.cgi';
   static const String queryCgi = '/webapi/query.cgi';
   static const int httpPort = 5000;
@@ -45,6 +52,13 @@ class SynoApi {
   static const String videoStreamAlt =
       'SYNO.SurveillanceStation.VideoStreaming';
   static const String recording = 'SYNO.SurveillanceStation.Recording';
+
+  /// HLS 实时视频流（先用 Open 打开，再用 Stream 播放，硬件解码更流畅）。
+  static const String videoStreamHls = 'SYNO.SurveillanceStation.VideoStream';
+
+  /// 独立音频流：官方 KB 明确 MJPEG 录像/实时皆无音频，H.264 等格式的
+  /// 视频流也不含音轨，声音由这个独立流提供。
+  static const String audioStream = 'SYNO.SurveillanceStation.AudioStream';
   static const String snapshot = 'SYNO.SurveillanceStation.Snapshot';
   static const String event = 'SYNO.SurveillanceStation.Event';
   static const String log = 'SYNO.SurveillanceStation.Log';
@@ -61,7 +75,9 @@ class SynoApi {
     ptz: 4,
     videoStream: 1,
     videoStreamAlt: 1,
-    recording: 4,
+    recording: 6,
+    videoStreamHls: 1,
+    audioStream: 2,
     snapshot: 2,
     event: 1,
     log: 1,
@@ -77,7 +93,7 @@ class SynoApi {
     ptz: 4,
     videoStream: 1,
     videoStreamAlt: 1,
-    recording: 4,
+    recording: 6,
     event: 1,
     log: 1,
     license: 1,
@@ -102,6 +118,9 @@ class SynoMethod {
   static const String disable = 'Disable';
   static const String save = 'Save';
   static const String stream = 'Stream';
+
+  /// 打开 HLS 流（群晖视频流闲置时会自动关闭，播放前需 Open）。
+  static const String open = 'Open';
   static const String move = 'Move';
   static const String zoom = 'Zoom';
   static const String listPreset = 'ListPreset';

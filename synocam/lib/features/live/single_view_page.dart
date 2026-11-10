@@ -14,6 +14,8 @@ import '../../data/models/media.dart';
 import '../../state/app_state.dart';
 import '../../widgets/app_icon.dart';
 import '../../widgets/fullscreen_stage.dart';
+import '../../widgets/hls_live_view.dart';
+import '../../widgets/live_audio_button.dart';
 import '../../widgets/live_clock.dart';
 import '../../widgets/live_snapshot.dart';
 import '../cameras/camera_edit_page.dart';
@@ -40,7 +42,31 @@ class _SingleViewPageState extends State<SingleViewPage> {
   Recording? _inlineClip;
   DateTime? _inlineAt;
 
+  /// 默认走 HLS 硬件解码（更流畅）；关闭则回退 MJPEG 逐帧画面。
+  bool _hlsEnabled = true;
+
   bool get _inInlinePlayback => _inlineClip != null && _inlineAt != null;
+
+  /// 画面模式切换：默认 HLS 硬件解码更流畅；NAS 不支持时可手动切回 MJPEG。
+  Widget _modeChip() => GestureDetector(
+        onTap: () => setState(() => _hlsEnabled = !_hlsEnabled),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
+          decoration: BoxDecoration(
+              color: Colors.black38, borderRadius: BorderRadius.circular(6)),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(_hlsEnabled ? Icons.speed : Icons.image,
+                  size: 13,
+                  color: _hlsEnabled ? Colors.greenAccent : Colors.white70),
+              const SizedBox(width: 3),
+              Text(_hlsEnabled ? '流畅' : '兼容',
+                  style: const TextStyle(fontSize: 10, color: Colors.white)),
+            ],
+          ),
+        ),
+      );
 
   @override
   void initState() {
@@ -153,7 +179,11 @@ class _SingleViewPageState extends State<SingleViewPage> {
         child: Stack(
           fit: StackFit.expand,
           children: <Widget>[
-            LiveSnapshot(camera: cam),
+            HlsLiveView(
+              camera: cam,
+              enabled: _hlsEnabled,
+              fallback: LiveSnapshot(camera: cam, maxFps: 12),
+            ),
             const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -179,6 +209,12 @@ class _SingleViewPageState extends State<SingleViewPage> {
                   const SizedBox(width: 6),
                   if (cam.codec.isNotEmpty) _osdChip(cam.codec, null),
                   const Spacer(),
+                  // 实时声音：群晖视频流不含音轨，单独播放独立音频流。
+                  LiveAudioButton(camera: cam),
+                  const SizedBox(width: 6),
+                  // HLS 硬件解码（流畅）/ MJPEG 逐帧（兼容）切换。
+                  _modeChip(),
+                  const SizedBox(width: 6),
                   // 全屏实时观看（实时画面不支持快进快退，全屏页会明确提示）。
                   GestureDetector(
                     onTap: () => FullscreenStage.show(

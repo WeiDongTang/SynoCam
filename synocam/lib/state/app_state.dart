@@ -463,9 +463,12 @@ class AppState extends ChangeNotifier {
   /// 仅实时预览用；历史回放绝不经过实时流接口。
   String liveStreamUrl(Camera c) => _cameras.liveStreamUrl(c);
 
-  /// 按选中时刻取 NAS 真实历史帧（回放兜底，绝不返回实时画面）。
-  Future<List<int>> recordingFrameAt(Camera c, DateTime at) =>
-      _cameras.recordingFrameAt(c.id, at);
+  /// HLS 实时流（硬件解码，流畅且不含音轨）；探测失败自动回退 MJPEG。
+  Future<bool> openHlsStream(Camera c) => _cameras.openHlsStream(c.id);
+  String hlsStreamUrl(Camera c) => _cameras.hlsStreamUrl(c.id);
+
+  /// 群晖独立音频流：官方视频流不含音轨，实时声音必须单独播放。
+  String audioStreamUrl(Camera c) => _cameras.audioStreamUrl(c.id);
 
   String rtspUrl(Camera c) => _cameras.rtspUrl(c);
   String webUiUrl() => _cameras.webUiUrl();

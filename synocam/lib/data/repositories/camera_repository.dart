@@ -53,9 +53,14 @@ class CameraRepository {
   /// 仅实时预览用；VideoStreaming/Stream 不支持历史回放时间参数。
   String liveStreamUrl(Camera camera) => _client.liveStreamUrl(camera: camera);
 
-  /// 按选中时刻取 NAS 真实历史帧（回放兜底，非实时画面）。
-  Future<List<int>> recordingFrameAt(int cameraId, DateTime at) =>
-      _client.recordingFrameAt(cameraId, at);
+  /// 打开 HLS 实时流（探测成功才应切换到 HLS 模式）。
+  Future<bool> openHlsStream(int cameraId) => _client.openHlsStream(cameraId);
+
+  /// HLS 实时视频流地址（硬件解码，比 MJPEG 逐帧软解码更流畅）。
+  String hlsStreamUrl(int cameraId) => _client.hlsStreamUrl(cameraId);
+
+  /// 群晖独立音频流地址（视频流不含音轨，声音必须单独播放）。
+  String audioStreamUrl(int cameraId) => _client.audioStreamUrl(cameraId);
 
   String rtspUrl(Camera camera) => _client.rtspUrl(camera.id);
 

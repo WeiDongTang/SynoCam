@@ -207,6 +207,58 @@ Future<void> main() async {
       'API Info path 拼接为完整 CGI');
   check(SynoEndpoints.cgiFromPath(null) == SynoEndpoints.entryCgi,
       'path 缺失时回退 entry.cgi');
+
+  print('── 官方录像回放 / 实时音视频链路 ──');
+  // 官方《Surveillance Station Web API》2.3.11：Download / Stream / List
+  // 均标注 6 and onward。旧实现把 recording 版本压到 4，且臆造了
+  // Recording/GetSnapshot 与 cameraId+startTime 下载，导致回放全挂。
+  check(SynoApi.defaultVersions[SynoApi.recording] == 6,
+      'Recording 默认版本 6（官方 Download/Stream/List 要求 6+）');
+  check(
+      SynoApi.preferredVersions[SynoApi.recording] == 6, 'Recording 实现依据版本 6');
+  check(
+      SynoMethod.download == 'Download' &&
+          SynoMethod.stream == 'Stream' &&
+          SynoMethod.open == 'Open',
+      '录像 Download / Stream 与 HLS Open 的 method 名');
+  check(SynoApi.videoStreamHls == 'SYNO.SurveillanceStation.VideoStream',
+      'HLS 实时视频流 API 名');
+  check(SynoApi.audioStream == 'SYNO.SurveillanceStation.AudioStream',
+      '群晖独立音频流 API 名（视频流不含音轨）');
+  check(
+      SynoEndpoints.videoStreamingCgi.endsWith('videoStreaming.cgi') &&
+          SynoEndpoints.audioStreamingCgi.endsWith('audioStreaming.cgi'),
+      'HLS / 音频流走各自的 CGI');
+  final audioUrl = buildSynoUrl(
+    host: '192.168.1.10',
+    cgi: SynoEndpoints.audioStreamingCgi,
+    query: <String, String?>{
+      'api': SynoApi.audioStream,
+      'version': '2',
+      'method': SynoMethod.stream,
+      'cameraId': '2',
+      '_sid': 'abc',
+    },
+  );
+  check(
+      audioUrl.contains('audioStreaming.cgi?') &&
+          audioUrl.contains('cameraId=2') &&
+          audioUrl.contains('_sid=abc'),
+      '音频流 URL 含 cameraId 与 _sid');
+  final hlsUrl = buildSynoUrl(
+    host: '192.168.1.10',
+    cgi: SynoEndpoints.videoStreamingCgi,
+    query: <String, String?>{
+      'api': SynoApi.videoStreamHls,
+      'version': '1',
+      'method': SynoMethod.stream,
+      'cameraId': '2',
+      'format': 'hls',
+      '_sid': 'abc',
+    },
+  );
+  check(hlsUrl.contains('videoStreaming.cgi?') && hlsUrl.contains('format=hls'),
+      'HLS 视频流 URL 带 format=hls');
   final info = parseApiInfo(<String, dynamic>{
     'SYNO.SurveillanceStation.Camera': <String, dynamic>{
       'maxVersion': 9,

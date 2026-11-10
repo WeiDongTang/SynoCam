@@ -131,7 +131,9 @@ class LivePage extends StatelessWidget {
     // 多画面网格若同时开 N 路 MJPEG 连续流，解码队列会直接堆积导致卡顿。
     // 单/双画面保留连续流，4 画面及以上降级为低开销快照轮询。
     final allowStream = state.gridCount <= 2;
-    final maxFps = state.gridCount == 1 ? 20 : (state.gridCount == 2 ? 15 : 10);
+    // 逐帧 JPEG 软解码是实时卡顿的主因；限制每秒解码帧数可显著降低
+    // CPU 占用与掉帧，多画面时进一步下调（HLS 模式在单摄像头页另走硬解）。
+    final maxFps = state.gridCount == 1 ? 12 : (state.gridCount == 2 ? 10 : 8);
     return GridView.builder(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -191,7 +193,7 @@ class LiveTile extends StatelessWidget {
     required this.camera,
     required this.onTap,
     this.allowStream = true,
-    this.maxFps = 20,
+    this.maxFps = 12,
     this.offsetMinutes = 0,
   });
 

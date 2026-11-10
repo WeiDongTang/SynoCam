@@ -62,6 +62,7 @@ ANDROID_PERMISSIONS = [
 APP_DELEGATE_SWIFT = '''import Flutter
 import UIKit
 import UserNotifications
+import AVFoundation
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
@@ -73,6 +74,17 @@ import UserNotifications
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
     let launched = super.application(application, didFinishLaunchingWithOptions: launchOptions)
+
+    // 录像 MP4 音轨 / 实时音频流需要能被听见：默认 AVAudioSession 为
+    // soloAmbient，iPhone 侧边「静音键」打开时会被系统静掉。设为 playback
+    // 分类后，静音键不再影响 App 内的视频与音频播放。
+    do {
+      let session = AVAudioSession.sharedInstance()
+      try session.setCategory(.playback, mode: .moviePlayback, options: [])
+      try session.setActive(true)
+    } catch {
+      // 音频会话配置失败不应阻断启动；画面仍可正常播放。
+    }
 
     // 首次启动请求通知权限：Surveillance Station 事件提醒（提醒 / 角标 / 声音）。
     // 重复调用是幂等的；用户拒绝后可在「设置 → 系统权限 → 打开系统设置」里修改。
@@ -316,7 +328,8 @@ def verify(root: Path, platform: str) -> None:
         if "NSAllowsLocalNetworking" not in (info.get("NSAppTransportSecurity") or {}):
             problems.append("Info.plist 缺少 NSAllowsLocalNetworking")
         delegate = (root / "ios" / "Runner" / "AppDelegate.swift").read_text(encoding="utf-8")
-        for token in ["requestAuthorization", "FlutterMethodChannel", "com.synocam/permissions"]:
+        for token in ["requestAuthorization", "FlutterMethodChannel",
+                      "com.synocam/permissions", "AVAudioSession", ".playback"]:
             if token not in delegate:
                 problems.append("AppDelegate.swift 缺少 " + token)
     else:

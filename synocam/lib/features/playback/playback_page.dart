@@ -156,6 +156,9 @@ class _PlaybackPageState extends State<PlaybackPage> {
       final c = VideoPlayerController.file(file);
       await c.initialize();
       c.addListener(_onVideoTick);
+      // 官方 MP4 录像自带音轨（audioCodec 非 0 时）；显式解除静音，
+      // 避免部分平台默认音量为 0 导致「回放没有声音」。
+      await c.setVolume(1.0);
       await c.setPlaybackSpeed(_speed);
       // rec.startsAt 是文件内容的真实起点：按时间段下载成功时就是选中时刻，
       // 从头播即为选中画面；按事件 id 下载整段时是片段起点，需 seek 偏移。
@@ -209,26 +212,15 @@ class _PlaybackPageState extends State<PlaybackPage> {
     if (!c.value.isPlaying) await c.play();
   }
 
-  /// 取「选中时刻」的真实历史帧。失败则展示真实诊断，绝不回退实时流。
+  /// 官方 SS 不提供「按时刻取历史帧」接口（Camera/GetSnapshot 仅取最新
+  /// 快照）。回放只认真实录像文件：下载失败就展示 NAS 返回的真实诊断，
+  /// 绝不降级到实时快照或实时流冒充回放画面。
   Future<void> _loadHistoryFrame(AppState state, DateTime at) async {
-    try {
-      final bytes = await state.recordingFrameAt(widget.camera, at);
-      if (mounted) {
-        setState(() {
-          _frame.value = Uint8List.fromList(bytes);
-          _phase = _PlaybackPhase.frame;
-          _sourceLabel = 'NAS 历史帧（按时刻录像快照）';
-          _frameTimeLabel = state.timeFull(at);
-        });
-      }
-      return;
-    } catch (e) {
-      if (needsReLoginError(e)) {
-        state.reportSessionExpired();
-        return;
-      }
-      _diagnostic += '\n按时刻历史帧失败：$e';
-    }
+    _diagnostic += '\n定位时刻 ${state.timeFull(at)}；已按官方接口尝试 '
+        'Recording/Download（id + offsetTimeMs + playTimeMs）与 '
+        'Recording/Stream（recordingId），NAS 均未返回可用录像文件。'
+        '\n可能原因：该账号缺少「录像回放」权限、录像已被轮换删除、'
+        '或该片段为 MJPEG 录制（官方 KB 明确 MJPEG 录像不含音频）。';
     if (mounted) {
       setState(() {
         _phase = _PlaybackPhase.failed;

@@ -42,7 +42,7 @@ class LiveSnapshot extends StatefulWidget {
     this.fit = BoxFit.cover,
     this.paused = false,
     this.allowStream = true,
-    this.maxFps = 20,
+    this.maxFps = 12,
   });
 
   final Camera camera;
